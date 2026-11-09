@@ -31,7 +31,7 @@ class SafFolderSource(
         DocumentsContract.Document.COLUMN_DISPLAY_NAME,
         DocumentsContract.Document.COLUMN_MIME_TYPE,
         DocumentsContract.Document.COLUMN_SIZE,
-        DocumentsContract.Document.COLUMN_FLAGS,
+        DocumentsContract.Document.COLUMN_LAST_MODIFIED,
     )
 
     override fun enumerate(): Flow<MediaRef> = flow {
@@ -50,6 +50,7 @@ class SafFolderSource(
                     val name = c.getString(1) ?: childId
                     val mime = c.getString(2)
                     val size = if (c.isNull(3)) null else c.getLong(3)
+                    val modified = if (c.isNull(4)) null else c.getLong(4)
                     if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
                         stack.add(childId to "$path$name/")
                         continue
@@ -62,6 +63,7 @@ class SafFolderSource(
                         mimeType = resolved,
                         sizeBytes = size,
                         location = "$displayName: $path",
+                        version = modified?.let { "${size ?: -1}:$it" },
                     )
                 }
             }

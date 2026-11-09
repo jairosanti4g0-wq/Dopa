@@ -41,7 +41,14 @@ class WebDavSource(
     private val root: HttpUrl = baseUrl.trim().let { if (it.endsWith("/")) it else "$it/" }.toHttpUrl()
     private val authHeader = Credentials.basic(username, password, Charsets.UTF_8)
 
-    private data class DavEntry(val url: HttpUrl, val isDir: Boolean, val contentType: String?, val length: Long?)
+    private data class DavEntry(
+        val url: HttpUrl,
+        val isDir: Boolean,
+        val contentType: String?,
+        val length: Long?,
+        val etag: String?,
+        val modified: String?,
+    )
 
     override fun enumerate(): Flow<MediaRef> = flow {
         val visited = HashSet<String>()
@@ -72,6 +79,7 @@ class WebDavSource(
                         mimeType = mime,
                         sizeBytes = e.length,
                         location = "$displayName: ${URLDecoder.decode(dir.encodedPath.removePrefix(root.encodedPath), "UTF-8").ifEmpty { "/" }}",
+                        version = e.etag ?: e.modified?.let { "${e.length ?: -1}:$it" },
                     ),
                 )
             }
@@ -98,6 +106,8 @@ class WebDavSource(
         var isDir = false
         var type: String? = null
         var length: Long? = null
+        var etag: String? = null
+        var modified: String? = null
         var text = StringBuilder()
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
@@ -105,7 +115,7 @@ class WebDavSource(
                 XmlPullParser.START_TAG -> {
                     text = StringBuilder()
                     when (parser.name) {
-                        "response" -> { href = null; isDir = false; type = null; length = null }
+                        "response" -> { href = null; isDir = false; type = null; length = null; etag = null; modified = null }
                         "collection" -> isDir = true
                     }
                 }
@@ -114,9 +124,11 @@ class WebDavSource(
                     "href" -> href = text.toString().trim()
                     "getcontenttype" -> type = text.toString().trim().ifEmpty { null }
                     "getcontentlength" -> length = text.toString().trim().toLongOrNull()
+                    "getetag" -> etag = text.toString().trim().ifEmpty { null }
+                    "getlastmodified" -> modified = text.toString().trim().ifEmpty { null }
                     "response" -> {
                         val resolved = href?.let { base.resolve(it) }
-                        if (resolved != null) out += DavEntry(resolved, isDir, type, length)
+                        if (resolved != null) out += DavEntry(resolved, isDir, type, length, etag, modified)
                     }
                 }
             }
@@ -151,6 +163,6 @@ class WebDavSource(
 
     companion object {
         private const val PROPFIND_BODY =
-            """<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontenttype/><d:getcontentlength/></d:prop></d:propfind>"""
+            """<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontenttype/><d:getcontentlength/><d:getetag/><d:getlastmodified/></d:prop></d:propfind>"""
     }
 }

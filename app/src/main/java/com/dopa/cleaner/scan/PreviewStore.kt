@@ -20,6 +20,8 @@ class PreviewStore(private val dir: File) {
         f
     }.getOrNull()
 
+    fun existing(key: String): File? = fileFor(key).takeIf { it.isFile && it.length() > 0 }
+
     fun remove(key: String) {
         runCatching { fileFor(key).delete() }
     }

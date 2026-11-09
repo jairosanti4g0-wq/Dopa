@@ -51,15 +51,17 @@ class LocalStorageSource(private val context: Context) : MediaSource {
                         stack.add(f)
                     } else if (f.isFile) {
                         val mime = MediaTypes.fromName(f.name) ?: continue
-                        if (f.length() < MIN_BYTES) continue
+                        val len = f.length()
+                        if (len < MIN_BYTES) continue
                         emit(
                             MediaRef(
                                 sourceId = ID,
                                 itemId = f.absolutePath,
                                 name = f.name,
                                 mimeType = mime,
-                                sizeBytes = f.length(),
+                                sizeBytes = len,
                                 location = "$label: ${f.parent?.removePrefix(rootPath).orEmpty().ifEmpty { "/" }}",
+                                version = "$len:${f.lastModified()}",
                             ),
                         )
                     }

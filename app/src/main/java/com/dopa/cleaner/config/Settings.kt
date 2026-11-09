@@ -45,8 +45,11 @@ sealed interface CustomSourceConfig {
     }
 }
 
+enum class ScanSchedule { OFF, DAILY, WEEKLY }
+
 data class AppSettings(
     val threshold: Float,
+    val schedule: ScanSchedule,
     val localEnabled: Boolean,
     val driveEnabled: Boolean,
     val photosEnabled: Boolean,
@@ -66,11 +69,13 @@ class SettingsRepository(private val context: Context) {
         val PHOTOS = booleanPreferencesKey("photos_enabled")
         val CUSTOM = stringPreferencesKey("custom_sources")
         val DISABLED = stringPreferencesKey("disabled_custom")
+        val SCHEDULE = stringPreferencesKey("schedule")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
         AppSettings(
             threshold = (p[Keys.THRESHOLD] ?: DEFAULT_THRESHOLD).coerceIn(MIN_THRESHOLD, MAX_THRESHOLD),
+            schedule = p[Keys.SCHEDULE]?.let { raw -> ScanSchedule.entries.firstOrNull { it.name == raw } } ?: ScanSchedule.OFF,
             localEnabled = p[Keys.LOCAL] ?: true,
             driveEnabled = p[Keys.DRIVE] ?: false,
             photosEnabled = p[Keys.PHOTOS] ?: false,
@@ -84,6 +89,8 @@ class SettingsRepository(private val context: Context) {
     suspend fun setThreshold(value: Float) = context.dataStore.edit {
         it[Keys.THRESHOLD] = value.coerceIn(MIN_THRESHOLD, MAX_THRESHOLD)
     }
+
+    suspend fun setSchedule(value: ScanSchedule) = context.dataStore.edit { it[Keys.SCHEDULE] = value.name }
 
     suspend fun setLocal(enabled: Boolean) = context.dataStore.edit { it[Keys.LOCAL] = enabled }
     suspend fun setDrive(enabled: Boolean) = context.dataStore.edit { it[Keys.DRIVE] = enabled }

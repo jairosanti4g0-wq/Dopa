@@ -7,6 +7,7 @@ import com.dopa.cleaner.core.DeleteResult
 import com.dopa.cleaner.core.Finding
 import com.dopa.cleaner.core.MediaRef
 import com.dopa.cleaner.core.MediaSource
+
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Collections
@@ -27,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger
 data class ScanState(
     val running: Boolean = false,
     val scanned: Int = 0,
+    val cached: Int = 0,
     val flagged: Int = 0,
     val skipped: Int = 0,
     val errors: Int = 0,
@@ -46,6 +49,8 @@ data class DeleteReport(
 class ScanEngine(
     private val classifierProvider: suspend () -> NsfwClassifier,
     private val previews: PreviewStore,
+    private val store: ScanStore,
+    private val sourceResolver: suspend (String) -> MediaSource?,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _state = MutableStateFlow(ScanState())
@@ -56,26 +61,36 @@ class ScanEngine(
     private val findings = ConcurrentHashMap<String, Finding>()
     private val sourceErrors: MutableList<String> = Collections.synchronizedList(mutableListOf())
     private val scanned = AtomicInteger()
+    private val cached = AtomicInteger()
     private val skipped = AtomicInteger()
     private val errors = AtomicInteger()
     @Volatile private var current: String? = null
     @Volatile private var running = false
     @Volatile private var finishedAt: Long? = null
 
+    init {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                store.findings().forEach { s ->
+                    findings[s.ref.key] = Finding(s.ref, s.sourceName, s.canDelete, s.scores, previews.existing(s.ref.key))
+                }
+            }
+            publish()
+        }
+    }
+
     @Synchronized
     fun start(list: List<MediaSource>, threshold: Float): Boolean {
         if (job?.isActive == true) return false
         require(list.isNotEmpty()) { "Nenhuma fonte selecionada" }
-        findings.clear()
-        previews.clear()
-        sources.clear()
         list.forEach { sources[it.id] = it }
         sourceErrors.clear()
-        scanned.set(0); skipped.set(0); errors.set(0)
+        scanned.set(0); cached.set(0); skipped.set(0); errors.set(0)
         current = null
         finishedAt = null
         running = true
         publish()
+        val runId = System.currentTimeMillis()
         job = scope.launch {
             val ticker = launch {
                 while (isActive) {
@@ -87,8 +102,12 @@ class ScanEngine(
                 val classifier = classifierProvider()
                 for (src in list) {
                     current = src.displayName
+                    val errorsBefore = errors.get()
                     try {
-                        scanSource(src, classifier, threshold)
+                        scanSource(src, classifier, threshold, runId)
+                        if (errors.get() == errorsBefore) {
+                            store.prune(src.id, runId).forEach { dropLocal(it) }
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
@@ -114,7 +133,9 @@ class ScanEngine(
         job?.cancel()
     }
 
-    private suspend fun scanSource(src: MediaSource, classifier: NsfwClassifier, threshold: Float) = coroutineScope {
+    suspend fun awaitIdle(): ScanState = state.first { !it.running }
+
+    private suspend fun scanSource(src: MediaSource, classifier: NsfwClassifier, threshold: Float, runId: Long) = coroutineScope {
         val channel = Channel<MediaRef>(capacity = 64)
         launch {
             try {
@@ -125,25 +146,27 @@ class ScanEngine(
         }
         repeat(WORKERS) {
             launch(Dispatchers.IO) {
-                for (ref in channel) process(src, ref, classifier, threshold)
+                for (ref in channel) process(src, ref, classifier, threshold, runId)
             }
         }
     }
 
-    private suspend fun process(src: MediaSource, ref: MediaRef, classifier: NsfwClassifier, threshold: Float) {
-        val frames: List<Bitmap> = try {
-            src.loadFrames(ref, FRAME_PX)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: AuthRequiredException) {
-            throw e
-        } catch (e: OutOfMemoryError) {
-            errors.incrementAndGet()
-            return
-        } catch (e: Exception) {
-            errors.incrementAndGet()
+    private suspend fun process(src: MediaSource, ref: MediaRef, classifier: NsfwClassifier, threshold: Float, runId: Long) {
+        val hit = ref.version?.let { v -> runCatching { store.get(ref.key) }.getOrNull()?.takeIf { it.ref.version == v } }
+        if (hit != null) {
+            cached.incrementAndGet()
+            val flagged = hit.scores.unsafe >= threshold
+            runCatching { store.touch(ref.key, runId, flagged, src.displayName, src.canDelete) }
+            if (!flagged || hit.dismissed) {
+                findings.remove(ref.key)
+                return
+            }
+            val preview = previews.existing(ref.key) ?: loadPreview(src, ref)
+            findings[ref.key] = Finding(ref, src.displayName, src.canDelete, hit.scores, preview)
             return
         }
+
+        val frames = loadFramesSafely(src, ref) ?: return
         if (frames.isEmpty()) {
             skipped.incrementAndGet()
             return
@@ -152,14 +175,44 @@ class ScanEngine(
             val scored = frames.map { it to classifier.classify(it) }
             val (bestFrame, best) = scored.maxBy { it.second.unsafe }
             scanned.incrementAndGet()
-            if (best.unsafe >= threshold) {
+            val flagged = best.unsafe >= threshold
+            runCatching { store.upsert(ref, src.displayName, src.canDelete, best, flagged, runId) }
+            val dismissed = runCatching { store.get(ref.key)?.dismissed }.getOrNull() == true
+            if (flagged && !dismissed) {
                 val preview = previews.save(ref.key, bestFrame)
                 findings[ref.key] = Finding(ref, src.displayName, src.canDelete, best, preview)
+            } else {
+                findings.remove(ref.key)
+                previews.remove(ref.key)
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
             errors.incrementAndGet()
+        } finally {
+            frames.forEach { if (!it.isRecycled) it.recycle() }
+        }
+    }
+
+    private suspend fun loadFramesSafely(src: MediaSource, ref: MediaRef): List<Bitmap>? =
+        try {
+            src.loadFrames(ref, FRAME_PX)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AuthRequiredException) {
+            throw e
+        } catch (e: OutOfMemoryError) {
+            errors.incrementAndGet()
+            null
+        } catch (e: Exception) {
+            errors.incrementAndGet()
+            null
+        }
+
+    private suspend fun loadPreview(src: MediaSource, ref: MediaRef): java.io.File? {
+        val frames = loadFramesSafely(src, ref) ?: return null
+        return try {
+            frames.firstOrNull()?.let { previews.save(ref.key, it) }
         } finally {
             frames.forEach { if (!it.isRecycled) it.recycle() }
         }
@@ -172,9 +225,9 @@ class ScanEngine(
         val failed = mutableListOf<String>()
         for (key in keys) {
             val finding = findings[key] ?: continue
-            val src = sources[finding.ref.sourceId]
+            val src = sources[finding.ref.sourceId] ?: sourceResolver(finding.ref.sourceId)?.also { sources[it.id] = it }
             if (src == null) {
-                failed += "${finding.ref.name}: fonte indisponível"
+                failed += "${finding.ref.name}: fonte desativada ou removida"
                 continue
             }
             val result = try {
@@ -185,8 +238,8 @@ class ScanEngine(
                 DeleteResult.Failed(e.message ?: e.javaClass.simpleName)
             }
             when (result) {
-                DeleteResult.Deleted -> { deleted++; drop(key) }
-                DeleteResult.Trashed -> { trashed++; drop(key) }
+                DeleteResult.Deleted -> { deleted++; forget(key) }
+                DeleteResult.Trashed -> { trashed++; forget(key) }
                 is DeleteResult.Unsupported -> unsupported += result.reason
                 is DeleteResult.Failed -> failed += "${finding.ref.name}: ${result.message}"
             }
@@ -196,11 +249,25 @@ class ScanEngine(
     }
 
     fun dismiss(keys: Collection<String>) {
-        keys.forEach { drop(it) }
+        runCatching { store.dismiss(keys) }
+        keys.forEach { dropLocal(it) }
         publish()
     }
 
-    private fun drop(key: String) {
+    fun resetCache() {
+        if (running) return
+        runCatching { store.clear() }
+        previews.clear()
+        findings.clear()
+        publish()
+    }
+
+    private fun forget(key: String) {
+        runCatching { store.remove(listOf(key)) }
+        dropLocal(key)
+    }
+
+    private fun dropLocal(key: String) {
         findings.remove(key)
         previews.remove(key)
     }
@@ -210,6 +277,7 @@ class ScanEngine(
         _state.value = ScanState(
             running = running,
             scanned = scanned.get(),
+            cached = cached.get(),
             flagged = list.size,
             skipped = skipped.get(),
             errors = errors.get(),

@@ -13,6 +13,11 @@ class DopaApp : Application() {
         container = AppContainer(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm?.createNotificationChannel(
+            NotificationChannel(CHANNEL_RESULTS, "Resultados", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
+            },
+        )
+        nm?.createNotificationChannel(
             NotificationChannel(CHANNEL_SCAN, getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW).apply {
                 setShowBadge(false)
                 lockscreenVisibility = android.app.Notification.VISIBILITY_SECRET
@@ -22,5 +27,6 @@ class DopaApp : Application() {
 
     companion object {
         const val CHANNEL_SCAN = "scan"
+        const val CHANNEL_RESULTS = "results"
     }
 }

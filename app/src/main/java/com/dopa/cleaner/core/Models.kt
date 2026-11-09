@@ -9,6 +9,7 @@ data class MediaRef(
     val mimeType: String,
     val sizeBytes: Long?,
     val location: String,
+    val version: String? = null,
 ) {
     val key: String get() = "$sourceId|$itemId"
     val isVideo: Boolean get() = mimeType.startsWith("video/")

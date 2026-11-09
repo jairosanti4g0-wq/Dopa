@@ -13,10 +13,12 @@ import com.dopa.cleaner.auth.AuthOutcome
 import com.dopa.cleaner.auth.GoogleScopes
 import com.dopa.cleaner.config.AppSettings
 import com.dopa.cleaner.config.CustomSourceConfig
+import com.dopa.cleaner.config.ScanSchedule
 import com.dopa.cleaner.config.SecretBox
 import com.dopa.cleaner.scan.ScanState
 import com.dopa.cleaner.service.ScanService
 import com.dopa.cleaner.source.webdav.WebDavSource
+import com.dopa.cleaner.work.ScanScheduler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -89,6 +91,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setThreshold(v: Float) = viewModelScope.launch { container.settings.setThreshold(v) }
+    fun setSchedule(v: ScanSchedule) = viewModelScope.launch {
+        container.settings.setSchedule(v)
+        ScanScheduler.apply(getApplication(), v)
+        if (v != ScanSchedule.OFF) toast("Varredura ${if (v == ScanSchedule.DAILY) "diária" else "semanal"} ao carregar. Google Fotos fica de fora (exige seleção manual).")
+    }
+
+    fun resetCache() {
+        if (scan.value.running) {
+            toast("Aguarde a varredura terminar")
+            return
+        }
+        container.engine.resetCache()
+        _selected.value = emptySet()
+        toast("Cache e resultados apagados: próxima varredura reanalisa tudo")
+    }
+
     fun setLocal(v: Boolean) = viewModelScope.launch { container.settings.setLocal(v) }
     fun setPhotos(v: Boolean) = viewModelScope.launch { container.settings.setPhotos(v) }
     fun setCustomEnabled(id: String, v: Boolean) = viewModelScope.launch { container.settings.setCustomEnabled(id, v) }

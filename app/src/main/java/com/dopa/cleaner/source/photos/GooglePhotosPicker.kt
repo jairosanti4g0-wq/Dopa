@@ -136,6 +136,7 @@ class GooglePhotosSource(
             mimeType = mime,
             sizeBytes = null,
             location = "Google Fotos",
+            version = item.id,
         )
     }.asFlow()
 

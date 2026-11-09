@@ -11,6 +11,7 @@ import com.dopa.cleaner.config.SettingsRepository
 import com.dopa.cleaner.core.MediaSource
 import com.dopa.cleaner.scan.PreviewStore
 import com.dopa.cleaner.scan.ScanEngine
+import com.dopa.cleaner.scan.ScanStore
 import com.dopa.cleaner.source.drive.GoogleDriveSource
 import com.dopa.cleaner.source.local.LocalStorageSource
 import com.dopa.cleaner.source.photos.GooglePhotosPickerClient
@@ -44,7 +45,8 @@ class AppContainer(context: Context) {
     val authorizer = GoogleAuthorizer(app)
     val photosClient = GooglePhotosPickerClient(authorizer)
     val local = LocalStorageSource(app)
-    private val previews = PreviewStore(File(app.cacheDir, "previews"))
+    private val previews = PreviewStore(File(app.noBackupFilesDir, "previews"))
+    private val store = ScanStore(app)
 
     private val classifierLock = Mutex()
     private var classifier: NsfwClassifier? = null
@@ -53,7 +55,12 @@ class AppContainer(context: Context) {
         classifier ?: withContext(Dispatchers.IO) { NsfwClassifier.create(app) }.also { classifier = it }
     }
 
-    val engine = ScanEngine(classifierProvider = { classifier() }, previews = previews)
+    val engine = ScanEngine(
+        classifierProvider = { classifier() },
+        previews = previews,
+        store = store,
+        sourceResolver = { id -> buildSources(settings.current()).sources.firstOrNull { it.id == id } },
+    )
 
     private val _picked = MutableStateFlow<PickedPhotos?>(null)
     val picked: StateFlow<PickedPhotos?> = _picked.asStateFlow()
@@ -62,12 +69,12 @@ class AppContainer(context: Context) {
         _picked.value = PickedPhotos(items, System.currentTimeMillis())
     }
 
-    fun buildSources(s: AppSettings): SourceBuildResult {
+    fun buildSources(s: AppSettings, interactive: Boolean = true): SourceBuildResult {
         val out = mutableListOf<MediaSource>()
         val warnings = mutableListOf<String>()
         if (s.localEnabled) out += local
         if (s.driveEnabled) out += GoogleDriveSource(authorizer)
-        if (s.photosEnabled) {
+        if (s.photosEnabled && interactive) {
             val p = _picked.value
             when {
                 p == null || p.items.isEmpty() -> warnings += "Google Fotos: nenhuma mídia selecionada"

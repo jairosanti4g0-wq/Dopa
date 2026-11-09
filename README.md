@@ -14,6 +14,13 @@ App Android (Kotlin + Compose) que varre armazenamento local e nuvem em busca de
 
 Vídeos: 3 quadros (25/50/75%), vale o de maior risco.
 
+## Cache incremental e agendamento
+
+- Cada item analisado fica em SQLite local com uma versão (local: tamanho+mtime; Drive: md5; WebDAV: ETag/Last-Modified; SAF: last_modified). Item sem alteração não é reclassificado; mudar o limite reaplica sobre os scores salvos.
+- Resultados sobrevivem a reinício do app. "Ignorar" é lembrado até o arquivo mudar.
+- Itens que sumiram da fonte são removidos do cache quando a fonte termina sem erros.
+- Agendamento diário/semanal via WorkManager, só carregando e com bateria ok. Google Fotos fica de fora (seleção manual). Drive só entra se o token renovar sem interação.
+
 ## Limitações reais
 
 - **Google Fotos**: desde 31/03/2025 a Library API só lê mídia criada pelo próprio app. Leitura da biblioteca inteira só via Picker (seleção manual, links valem 60 min). Exclusão por terceiros não existe na API.

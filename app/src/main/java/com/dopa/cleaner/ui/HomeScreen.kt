@@ -54,7 +54,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material3.FilterChip
 import com.dopa.cleaner.config.CustomSourceConfig
+import com.dopa.cleaner.config.ScanSchedule
 
 @Composable
 fun DopaRoot(vm: MainViewModel, onRequestAllFiles: () -> Unit, onAddFolder: () -> Unit) {
@@ -160,6 +162,18 @@ fun HomeScreen(
             item { SectionTitle("Sensibilidade") }
             item { ThresholdSlider(s.threshold, vm::setThreshold) }
 
+            item { SectionTitle("Agendamento") }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(ScanSchedule.OFF to "Desligado", ScanSchedule.DAILY to "Diário", ScanSchedule.WEEKLY to "Semanal").forEach { (v, label) ->
+                            FilterChip(selected = s.schedule == v, onClick = { vm.setSchedule(v) }, label = { Text(label) })
+                        }
+                    }
+                    Text("Roda carregando e com bateria ok. Itens sem alteração são pulados.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
             item { SectionTitle("Varredura") }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -167,7 +181,7 @@ fun HomeScreen(
                         LinearProgressIndicator(Modifier.fillMaxWidth())
                         Text("Fonte: ${scan.currentSource ?: "…"}")
                     }
-                    Text("${scan.scanned} analisados · ${scan.flagged} sinalizados · ${scan.skipped} ignorados · ${scan.errors} erros")
+                    Text("${scan.scanned} analisados · ${scan.cached} sem alteração · ${scan.flagged} sinalizados · ${scan.skipped} ignorados · ${scan.errors} erros")
                     scan.sourceErrors.forEach {
                         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
@@ -181,6 +195,7 @@ fun HomeScreen(
                             Text("Resultados (${scan.flagged})")
                         }
                     }
+                    TextButton(onClick = vm::resetCache, enabled = !scan.running) { Text("Limpar cache e resultados") }
                 }
             }
             busy?.let { msg ->

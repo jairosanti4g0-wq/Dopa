@@ -43,6 +43,8 @@ class GoogleDriveSource(private val authorizer: GoogleAuthorizer) : MediaSource 
         val mimeType: String = "",
         val size: String? = null,
         val thumbnailLink: String? = null,
+        val md5Checksum: String? = null,
+        val modifiedTime: String? = null,
     )
 
     private suspend fun token(): String = authorizer.tokenOrThrow(listOf(GoogleScopes.DRIVE))
@@ -59,7 +61,7 @@ class GoogleDriveSource(private val authorizer: GoogleAuthorizer) : MediaSource 
                 )
                 .addQueryParameter("spaces", "drive")
                 .addQueryParameter("pageSize", "1000")
-                .addQueryParameter("fields", "nextPageToken,files(id,name,mimeType,size,thumbnailLink)")
+                .addQueryParameter("fields", "nextPageToken,files(id,name,mimeType,size,thumbnailLink,md5Checksum,modifiedTime)")
                 .apply { pageToken?.let { addQueryParameter("pageToken", it) } }
                 .build()
             val body = Http.client.readString(Request.Builder().url(url).auth(token()).build())
@@ -75,6 +77,7 @@ class GoogleDriveSource(private val authorizer: GoogleAuthorizer) : MediaSource 
                         mimeType = f.mimeType,
                         sizeBytes = f.size?.toLongOrNull(),
                         location = "Google Drive",
+                        version = f.md5Checksum ?: f.modifiedTime,
                     ),
                 )
             }

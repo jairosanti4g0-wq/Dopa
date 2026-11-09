@@ -151,6 +151,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.tensorflow.lite)
     implementation(libs.play.services.auth)
+    implementation(libs.androidx.work.runtime.ktx)
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)
 }
