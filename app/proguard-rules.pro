@@ -1,0 +1,5 @@
+-keep class org.tensorflow.lite.** { *; }
+-dontwarn org.tensorflow.lite.**
+-keepclassmembers class kotlinx.serialization.json.** { *** Companion; }
+-keepclasseswithmembers class com.dopa.cleaner.** { kotlinx.serialization.KSerializer serializer(...); }
+-keep,includedescriptorclasses class com.dopa.cleaner.**$$serializer { *; }
