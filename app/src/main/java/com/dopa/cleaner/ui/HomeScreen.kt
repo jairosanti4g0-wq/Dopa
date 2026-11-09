@@ -80,6 +80,7 @@ fun HomeScreen(
     val driveConnected by vm.driveConnected.collectAsStateWithLifecycle()
     val picked by vm.picked.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
+    val photosPicking by vm.photosPicking.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
     var showWebDav by remember { mutableStateOf(false) }
 
@@ -186,7 +187,7 @@ fun HomeScreen(
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(msg, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                        TextButton(onClick = vm::cancelPhotos) { Text("Parar") }
+                        if (photosPicking) TextButton(onClick = vm::cancelPhotos) { Text("Parar") }
                     }
                 }
             }

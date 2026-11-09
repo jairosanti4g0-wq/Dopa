@@ -64,6 +64,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var photosJob: Job? = null
 
+    private val _photosPicking = MutableStateFlow(false)
+    val photosPicking: StateFlow<Boolean> = _photosPicking.asStateFlow()
+
     init {
         viewModelScope.launch {
             container.engine.state.collect { s ->
@@ -141,6 +144,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun pickPhotos() {
         if (photosJob?.isActive == true) return
         photosJob = viewModelScope.launch {
+            _photosPicking.value = true
             try {
                 when (val o = container.authorizer.authorize(listOf(GoogleScopes.PHOTOS_PICKER))) {
                     is AuthOutcome.NeedsConsent -> {
@@ -167,6 +171,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 toast("Google Fotos: ${e.message ?: e.javaClass.simpleName}")
             } finally {
                 _busy.value = null
+                _photosPicking.value = false
             }
         }
     }
