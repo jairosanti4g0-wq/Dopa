@@ -4,11 +4,13 @@ import android.graphics.Bitmap
 import android.util.Xml
 import com.dopa.cleaner.core.BitmapLoader
 import com.dopa.cleaner.core.DeleteResult
+import com.dopa.cleaner.core.FrameRequest
 import com.dopa.cleaner.core.Http
 import com.dopa.cleaner.core.HttpStatusException
 import com.dopa.cleaner.core.MediaRef
 import com.dopa.cleaner.core.MediaSource
 import com.dopa.cleaner.core.MediaTypes
+import com.dopa.cleaner.core.ViewTarget
 import com.dopa.cleaner.core.expectSuccess
 import com.dopa.cleaner.core.readBytes
 import com.dopa.cleaner.core.readString
@@ -139,14 +141,19 @@ class WebDavSource(
 
     private fun normalize(url: HttpUrl): String = url.encodedPath.trimEnd('/')
 
-    override suspend fun loadFrames(ref: MediaRef, targetPx: Int): List<Bitmap> = withContext(Dispatchers.IO) {
+    override suspend fun loadFrames(ref: MediaRef, request: FrameRequest): List<Bitmap> = withContext(Dispatchers.IO) {
         if (ref.isVideo) {
-            BitmapLoader.videoFrames(targetPx) { it.setDataSource(ref.itemId, mapOf("Authorization" to authHeader)) }
+            BitmapLoader.videoFrames(request.targetPx, request.videoFrames) {
+                it.setDataSource(ref.itemId, mapOf("Authorization" to authHeader))
+            }
         } else {
             val bytes = Http.client.readBytes(Request.Builder().url(ref.itemId).header("Authorization", authHeader).build())
-            listOf(BitmapLoader.decodeBytes(bytes, targetPx))
+            listOf(BitmapLoader.decodeBytes(bytes, request.targetPx))
         }
     }
+
+    override suspend fun viewTarget(ref: MediaRef, videoStream: Boolean): ViewTarget =
+        ViewTarget.Remote(ref.itemId, mapOf("Authorization" to authHeader))
 
     override suspend fun delete(ref: MediaRef): DeleteResult = withContext(Dispatchers.IO) {
         try {

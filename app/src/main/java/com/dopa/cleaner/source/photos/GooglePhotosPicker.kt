@@ -5,9 +5,11 @@ import com.dopa.cleaner.auth.GoogleAuthorizer
 import com.dopa.cleaner.auth.GoogleScopes
 import com.dopa.cleaner.core.BitmapLoader
 import com.dopa.cleaner.core.DeleteResult
+import com.dopa.cleaner.core.FrameRequest
 import com.dopa.cleaner.core.Http
 import com.dopa.cleaner.core.MediaRef
 import com.dopa.cleaner.core.MediaSource
+import com.dopa.cleaner.core.ViewTarget
 import com.dopa.cleaner.core.expectSuccess
 import com.dopa.cleaner.core.readBytes
 import com.dopa.cleaner.core.readString
@@ -97,6 +99,8 @@ class GooglePhotosPickerClient(private val authorizer: GoogleAuthorizer) {
         out
     }
 
+    suspend fun accessToken(): String = token()
+
     suspend fun deleteSession(sessionId: String) = withContext(Dispatchers.IO) {
         runCatching {
             Http.client.expectSuccess(
@@ -140,10 +144,17 @@ class GooglePhotosSource(
         )
     }.asFlow()
 
-    override suspend fun loadFrames(ref: MediaRef, targetPx: Int): List<Bitmap> {
+    override suspend fun loadFrames(ref: MediaRef, request: FrameRequest): List<Bitmap> {
         val base = byId[ref.itemId]?.mediaFile?.baseUrl ?: return emptyList()
-        val bytes = client.download(base, targetPx)
-        return listOf(BitmapLoader.decodeBytes(bytes, targetPx))
+        val bytes = client.download(base, request.targetPx)
+        return listOf(BitmapLoader.decodeBytes(bytes, request.targetPx))
+    }
+
+    override suspend fun viewTarget(ref: MediaRef, videoStream: Boolean): ViewTarget {
+        val base = byId[ref.itemId]?.mediaFile?.baseUrl
+            ?: throw IllegalStateException("Seleção do Google Fotos expirou: selecione novamente")
+        val suffix = if (videoStream) "=dv" else "=w2048-h2048"
+        return ViewTarget.Remote(base + suffix, mapOf("Authorization" to "Bearer ${client.accessToken()}"))
     }
 
     override suspend fun delete(ref: MediaRef): DeleteResult =

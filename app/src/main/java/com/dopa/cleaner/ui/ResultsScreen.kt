@@ -69,13 +69,13 @@ import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ResultsScreen(vm: MainViewModel, onBack: () -> Unit) {
+fun ResultsScreen(vm: MainViewModel, onBack: () -> Unit, onOpen: (String) -> Unit) {
     val scan by vm.scan.collectAsStateWithLifecycle()
     val selected by vm.selected.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
-    var reveal by remember { mutableStateOf(false) }
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    var reveal by remember(settings?.blurPreviews) { mutableStateOf(settings?.blurPreviews == false) }
     var confirm by remember { mutableStateOf(false) }
-    var details by remember { mutableStateOf<Finding?>(null) }
 
     Scaffold(
         topBar = {
@@ -123,8 +123,9 @@ fun ResultsScreen(vm: MainViewModel, onBack: () -> Unit) {
                         finding = f,
                         selected = f.ref.key in selected,
                         reveal = reveal,
-                        onClick = { vm.toggle(f.ref.key) },
-                        onLongClick = { details = f },
+                        onClick = { if (selected.isNotEmpty()) vm.toggle(f.ref.key) else onOpen(f.ref.key) },
+                        onLongClick = { vm.toggle(f.ref.key) },
+                        onToggle = { vm.toggle(f.ref.key) },
                     )
                 }
             }
@@ -152,30 +153,6 @@ fun ResultsScreen(vm: MainViewModel, onBack: () -> Unit) {
             dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancelar") } },
         )
     }
-
-    details?.let { f ->
-        val ctx = LocalContext.current
-        AlertDialog(
-            onDismissRequest = { details = null },
-            title = { Text(f.ref.name) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Fonte: ${f.sourceName}")
-                    Text("Local: ${f.ref.location}")
-                    f.ref.sizeBytes?.let { Text("Tamanho: ${Formatter.formatShortFileSize(ctx, it)}") }
-                    Text("Tipo: ${f.ref.mimeType}")
-                    Text("Risco: ${pct(f.scores.unsafe)}")
-                    Text(
-                        "porn ${pct(f.scores.porn)} · hentai ${pct(f.scores.hentai)} · sexy ${pct(f.scores.sexy)} · " +
-                            "neutral ${pct(f.scores.neutral)} · drawings ${pct(f.scores.drawings)}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    if (!f.canDelete) Text("Exclusão manual necessária.", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            confirmButton = { TextButton(onClick = { details = null }) { Text("Fechar") } },
-        )
-    }
 }
 
 private fun pct(v: Float) = "${(v * 100).toInt()}%"
@@ -188,6 +165,7 @@ private fun FindingTile(
     reveal: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onToggle: () -> Unit,
 ) {
     val bitmap = rememberPreview(finding.preview)
     val shape = RoundedCornerShape(8.dp)
@@ -220,12 +198,13 @@ private fun FindingTile(
                 style = MaterialTheme.typography.labelSmall,
             )
         }
-        Icon(
-            if (selected) Icons.Default.CheckCircle else Icons.Outlined.Circle,
-            null,
-            tint = if (selected) MaterialTheme.colorScheme.primary else Color.White,
-            modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
-        )
+        IconButton(onClick = onToggle, modifier = Modifier.align(Alignment.TopEnd)) {
+            Icon(
+                if (selected) Icons.Default.CheckCircle else Icons.Outlined.Circle,
+                "Selecionar",
+                tint = if (selected) MaterialTheme.colorScheme.primary else Color.White,
+            )
+        }
     }
 }
 

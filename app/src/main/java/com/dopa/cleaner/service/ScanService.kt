@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -22,6 +23,27 @@ import kotlinx.coroutines.launch
 
 class ScanService : LifecycleService() {
 
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "dopa:scan").apply {
+            setReferenceCounted(false)
+            acquire(WAKE_TIMEOUT_MS)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        wakeLock = null
+    }
+
+    override fun onDestroy() {
+        releaseWakeLock()
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACTION_CANCEL) {
@@ -34,6 +56,7 @@ class ScanService : LifecycleService() {
             build(ScanState(running = true)),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
+        acquireWakeLock()
         val engine = (application as DopaApp).container.engine
         lifecycleScope.launch {
             engine.state.collect { s ->
@@ -46,6 +69,7 @@ class ScanService : LifecycleService() {
                         }
                     }
                 } else {
+                    releaseWakeLock()
                     ServiceCompat.stopForeground(this@ScanService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
@@ -70,7 +94,7 @@ class ScanService : LifecycleService() {
         return NotificationCompat.Builder(this, DopaApp.CHANNEL_SCAN)
             .setSmallIcon(R.drawable.ic_stat)
             .setContentTitle("Varrendo ${s.currentSource ?: "…"}")
-            .setContentText("${s.scanned} analisados · ${s.flagged} sinalizados")
+            .setContentText("${s.scanned + s.cached} verificados · ${s.flagged} sinalizados · roda com a tela apagada")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
@@ -82,6 +106,7 @@ class ScanService : LifecycleService() {
 
     companion object {
         private const val NOTIF_ID = 42
+        private const val WAKE_TIMEOUT_MS = 6L * 60 * 60 * 1000
         private const val ACTION_CANCEL = "com.dopa.cleaner.CANCEL"
 
         fun start(context: Context) {

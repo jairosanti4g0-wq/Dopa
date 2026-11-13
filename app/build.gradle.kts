@@ -37,25 +37,30 @@ android {
 
     signingConfigs {
         val storePath = signingValue("storeFile", "DOPA_KEYSTORE_PATH")
-        if (storePath != null) {
-            create("shared") {
+        create("shared") {
+            if (storePath != null) {
                 storeFile = file(storePath)
                 storePassword = signingValue("storePassword", "DOPA_KEYSTORE_PASSWORD")
                 keyAlias = signingValue("keyAlias", "DOPA_KEY_ALIAS")
                 keyPassword = signingValue("keyPassword", "DOPA_KEY_PASSWORD")
+            } else {
+                storeFile = file("dopa-shared.keystore")
+                storePassword = "dopa-shared"
+                keyAlias = "dopa"
+                keyPassword = "dopa-shared"
             }
         }
     }
 
     buildTypes {
-        val shared = signingConfigs.findByName("shared")
+        val shared = signingConfigs.getByName("shared")
         debug {
-            if (shared != null) signingConfig = shared
+            signingConfig = shared
         }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = shared ?: signingConfigs.getByName("debug")
+            signingConfig = shared
         }
     }
 
@@ -152,6 +157,10 @@ dependencies {
     implementation(libs.tensorflow.lite)
     implementation(libs.play.services.auth)
     implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.exifinterface)
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.datasource.okhttp)
+    implementation(libs.androidx.media3.ui)
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)
 }

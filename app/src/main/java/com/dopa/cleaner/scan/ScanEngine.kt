@@ -3,7 +3,10 @@ package com.dopa.cleaner.scan
 import android.graphics.Bitmap
 import com.dopa.cleaner.classifier.NsfwClassifier
 import com.dopa.cleaner.core.AuthRequiredException
+import com.dopa.cleaner.config.ScanSpeed
 import com.dopa.cleaner.core.DeleteResult
+import com.dopa.cleaner.core.FrameRequest
+import com.dopa.cleaner.core.ViewTarget
 import com.dopa.cleaner.core.Finding
 import com.dopa.cleaner.core.MediaRef
 import com.dopa.cleaner.core.MediaSource
@@ -80,7 +83,7 @@ class ScanEngine(
     }
 
     @Synchronized
-    fun start(list: List<MediaSource>, threshold: Float): Boolean {
+    fun start(list: List<MediaSource>, threshold: Float, speed: ScanSpeed = ScanSpeed.BALANCED): Boolean {
         if (job?.isActive == true) return false
         require(list.isNotEmpty()) { "Nenhuma fonte selecionada" }
         list.forEach { sources[it.id] = it }
@@ -91,6 +94,11 @@ class ScanEngine(
         running = true
         publish()
         val runId = System.currentTimeMillis()
+        val request = FrameRequest(
+            targetPx = if (speed == ScanSpeed.FAST) 224 else 256,
+            videoFrames = speed.videoFrames,
+            allowEmbeddedThumb = speed.useExifThumb,
+        )
         job = scope.launch {
             val ticker = launch {
                 while (isActive) {
@@ -104,7 +112,7 @@ class ScanEngine(
                     current = src.displayName
                     val errorsBefore = errors.get()
                     try {
-                        scanSource(src, classifier, threshold, runId)
+                        scanSource(src, classifier, threshold, runId, request)
                         if (errors.get() == errorsBefore) {
                             store.prune(src.id, runId).forEach { dropLocal(it) }
                         }
@@ -135,8 +143,14 @@ class ScanEngine(
 
     suspend fun awaitIdle(): ScanState = state.first { !it.running }
 
-    private suspend fun scanSource(src: MediaSource, classifier: NsfwClassifier, threshold: Float, runId: Long) = coroutineScope {
-        val channel = Channel<MediaRef>(capacity = 64)
+    private suspend fun scanSource(
+        src: MediaSource,
+        classifier: NsfwClassifier,
+        threshold: Float,
+        runId: Long,
+        request: FrameRequest,
+    ) = coroutineScope {
+        val channel = Channel<MediaRef>(capacity = 256)
         launch {
             try {
                 src.enumerate().collect { channel.send(it) }
@@ -144,14 +158,22 @@ class ScanEngine(
                 channel.close()
             }
         }
-        repeat(WORKERS) {
+        val workers = (Runtime.getRuntime().availableProcessors() + classifier.parallelism).coerceIn(4, 12)
+        repeat(workers) {
             launch(Dispatchers.IO) {
-                for (ref in channel) process(src, ref, classifier, threshold, runId)
+                for (ref in channel) process(src, ref, classifier, threshold, runId, request)
             }
         }
     }
 
-    private suspend fun process(src: MediaSource, ref: MediaRef, classifier: NsfwClassifier, threshold: Float, runId: Long) {
+    private suspend fun process(
+        src: MediaSource,
+        ref: MediaRef,
+        classifier: NsfwClassifier,
+        threshold: Float,
+        runId: Long,
+        request: FrameRequest,
+    ) {
         val hit = ref.version?.let { v -> runCatching { store.get(ref.key) }.getOrNull()?.takeIf { it.ref.version == v } }
         if (hit != null) {
             cached.incrementAndGet()
@@ -161,12 +183,12 @@ class ScanEngine(
                 findings.remove(ref.key)
                 return
             }
-            val preview = previews.existing(ref.key) ?: loadPreview(src, ref)
+            val preview = previews.existing(ref.key) ?: loadPreview(src, ref, request)
             findings[ref.key] = Finding(ref, src.displayName, src.canDelete, hit.scores, preview)
             return
         }
 
-        val frames = loadFramesSafely(src, ref) ?: return
+        val frames = loadFramesSafely(src, ref, request) ?: return
         if (frames.isEmpty()) {
             skipped.incrementAndGet()
             return
@@ -194,9 +216,9 @@ class ScanEngine(
         }
     }
 
-    private suspend fun loadFramesSafely(src: MediaSource, ref: MediaRef): List<Bitmap>? =
+    private suspend fun loadFramesSafely(src: MediaSource, ref: MediaRef, request: FrameRequest): List<Bitmap>? =
         try {
-            src.loadFrames(ref, FRAME_PX)
+            src.loadFrames(ref, request)
         } catch (e: CancellationException) {
             throw e
         } catch (e: AuthRequiredException) {
@@ -209,8 +231,8 @@ class ScanEngine(
             null
         }
 
-    private suspend fun loadPreview(src: MediaSource, ref: MediaRef): java.io.File? {
-        val frames = loadFramesSafely(src, ref) ?: return null
+    private suspend fun loadPreview(src: MediaSource, ref: MediaRef, request: FrameRequest): java.io.File? {
+        val frames = loadFramesSafely(src, ref, request.copy(videoFrames = 1)) ?: return null
         return try {
             frames.firstOrNull()?.let { previews.save(ref.key, it) }
         } finally {
@@ -246,6 +268,13 @@ class ScanEngine(
         }
         publish()
         return DeleteReport(deleted, trashed, unsupported, failed)
+    }
+
+    suspend fun viewTarget(key: String, videoStream: Boolean): ViewTarget {
+        val finding = findings[key] ?: throw IllegalStateException("Item não está mais na lista")
+        val src = sources[finding.ref.sourceId] ?: sourceResolver(finding.ref.sourceId)?.also { sources[it.id] = it }
+            ?: throw IllegalStateException("Fonte \"${finding.sourceName}\" desativada ou removida")
+        return src.viewTarget(finding.ref, videoStream)
     }
 
     fun dismiss(keys: Collection<String>) {
@@ -289,8 +318,6 @@ class ScanEngine(
     }
 
     companion object {
-        private const val WORKERS = 4
-        private const val FRAME_PX = 256
         private const val PUBLISH_MS = 400L
     }
 }

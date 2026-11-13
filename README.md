@@ -14,6 +14,16 @@ App Android (Kotlin + Compose) que varre armazenamento local e nuvem em busca de
 
 Vídeos: 3 quadros (25/50/75%), vale o de maior risco.
 
+## Velocidade e segundo plano
+
+- Modos em Configurações: Rápido (miniatura EXIF embutida + 1 quadro/vídeo), Equilibrado (EXIF + 2 quadros), Preciso (decodifica tudo + 3 quadros).
+- Pool de interpretadores TFLite (núcleos/2) e workers ≈ núcleos + pool.
+- Varredura em serviço foreground com WakeLock parcial: continua com tela apagada ou em outro app. Em Configurações há o atalho para remover a otimização de bateria (necessário em Xiaomi/Samsung/Motorola agressivos).
+
+## Visualizador
+
+Toque numa miniatura: abre em tela cheia com zoom (pinça/duplo toque) e player de vídeo (Media3/ExoPlayer, streaming autenticado para Drive/WebDAV/Fotos). Deslize para o próximo; Ignorar/Selecionar/Excluir na barra inferior. Pressão longa ou o círculo seleciona na grade.
+
 ## Cache incremental e agendamento
 
 - Cada item analisado fica em SQLite local com uma versão (local: tamanho+mtime; Drive: md5; WebDAV: ETag/Last-Modified; SAF: last_modified). Item sem alteração não é reclassificado; mudar o limite reaplica sobre os scores salvos.
@@ -39,15 +49,13 @@ CI (`.github/workflows/android.yml`) gera o APK como artifact `dopa-cleaner-apk`
 
 ### Assinatura fixa (obrigatória para OAuth Google)
 
-O SHA-1 do certificado precisa ser estável. Gere uma vez:
+Sem secrets, debug e release são assinados com `app/dopa-shared.keystore` (commitado de propósito), então o SHA-1 é o mesmo em toda build:
 
-```bash
-keytool -genkeypair -v -keystore dopa.jks -alias dopa -keyalg RSA -keysize 2048 -validity 10000
-keytool -list -v -keystore dopa.jks -alias dopa | grep SHA1
+```
+SHA-1: AA:C9:6B:D4:1A:26:64:AE:99:87:00:9F:2B:EF:40:97:28:BB:A3:15
 ```
 
-Local: `keystore.properties` na raiz (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`).
-CI: secrets `DOPA_KEYSTORE_BASE64` (`base64 -w0 dopa.jks`), `DOPA_KEYSTORE_PASSWORD`, `DOPA_KEY_ALIAS`, `DOPA_KEY_PASSWORD`.
+O app também mostra pacote e SHA-1 em Configurações > Conta Google. Risco: quem tem acesso ao repositório pode assinar um APK que se passa por atualização deste app. Para chave privada, defina os secrets `DOPA_KEYSTORE_BASE64`, `DOPA_KEYSTORE_PASSWORD`, `DOPA_KEY_ALIAS`, `DOPA_KEY_PASSWORD` (e cadastre o SHA-1 dela no Google Cloud).
 
 ### Google Cloud
 

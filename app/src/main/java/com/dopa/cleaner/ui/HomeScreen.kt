@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -35,14 +36,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -54,19 +54,28 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.material3.FilterChip
 import com.dopa.cleaner.config.CustomSourceConfig
-import com.dopa.cleaner.config.ScanSchedule
 
 @Composable
 fun DopaRoot(vm: MainViewModel, onRequestAllFiles: () -> Unit, onAddFolder: () -> Unit) {
     var screen by rememberSaveable { mutableStateOf("home") }
-    BackHandler(enabled = screen != "home") { screen = "home" }
-    when (screen) {
-        "results" -> ResultsScreen(vm, onBack = { screen = "home" })
-        else -> HomeScreen(vm, onRequestAllFiles, onAddFolder, onOpenResults = { screen = "results" })
+    val back: () -> Unit = {
+        screen = if (screen.startsWith(VIEWER_PREFIX)) "results" else "home"
+    }
+    BackHandler(enabled = screen != "home", onBack = back)
+    when {
+        screen == "results" -> ResultsScreen(vm, onBack = back, onOpen = { key -> screen = VIEWER_PREFIX + key })
+        screen == "settings" -> SettingsScreen(vm, onBack = back)
+        screen.startsWith(VIEWER_PREFIX) -> ViewerScreen(vm, startKey = screen.removePrefix(VIEWER_PREFIX), onBack = back)
+        else -> HomeScreen(
+            vm, onRequestAllFiles, onAddFolder,
+            onOpenResults = { screen = "results" },
+            onOpenSettings = { screen = "settings" },
+        )
     }
 }
+
+private const val VIEWER_PREFIX = "viewer:"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,6 +84,7 @@ fun HomeScreen(
     onRequestAllFiles: () -> Unit,
     onAddFolder: () -> Unit,
     onOpenResults: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val scan by vm.scan.collectAsStateWithLifecycle()
@@ -86,7 +96,19 @@ fun HomeScreen(
     var showAdd by remember { mutableStateOf(false) }
     var showWebDav by remember { mutableStateOf(false) }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Dopa Cleaner") }) }) { pad ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Dopa Cleaner") },
+                actions = { IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, "Configurações") } },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    actionIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
+            )
+        },
+    ) { pad ->
         val s = settings
         if (s == null) {
             Column(Modifier.padding(pad).fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -159,20 +181,6 @@ fun HomeScreen(
                 }
             }
 
-            item { SectionTitle("Sensibilidade") }
-            item { ThresholdSlider(s.threshold, vm::setThreshold) }
-
-            item { SectionTitle("Agendamento") }
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(ScanSchedule.OFF to "Desligado", ScanSchedule.DAILY to "Diário", ScanSchedule.WEEKLY to "Semanal").forEach { (v, label) ->
-                            FilterChip(selected = s.schedule == v, onClick = { vm.setSchedule(v) }, label = { Text(label) })
-                        }
-                    }
-                    Text("Roda carregando e com bateria ok. Itens sem alteração são pulados.", style = MaterialTheme.typography.bodySmall)
-                }
-            }
 
             item { SectionTitle("Varredura") }
             item {
@@ -182,6 +190,11 @@ fun HomeScreen(
                         Text("Fonte: ${scan.currentSource ?: "…"}")
                     }
                     Text("${scan.scanned} analisados · ${scan.cached} sem alteração · ${scan.flagged} sinalizados · ${scan.skipped} ignorados · ${scan.errors} erros")
+                    Text(
+                        "Modo ${s.options.speed.label} · limite ${(s.threshold * 100).toInt()}% · continua em segundo plano, pode sair do app",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     scan.sourceErrors.forEach {
                         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
@@ -195,7 +208,6 @@ fun HomeScreen(
                             Text("Resultados (${scan.flagged})")
                         }
                     }
-                    TextButton(onClick = vm::resetCache, enabled = !scan.running) { Text("Limpar cache e resultados") }
                 }
             }
             busy?.let { msg ->
@@ -253,20 +265,6 @@ private fun SourceRow(
         }
         trailing()
         Switch(checked = checked, onCheckedChange = onChecked)
-    }
-}
-
-@Composable
-private fun ThresholdSlider(value: Float, onCommit: (Float) -> Unit) {
-    var local by remember(value) { mutableFloatStateOf(value) }
-    Column {
-        Text("Limite: ${(local * 100).toInt()}% — menor = mais sensível (mais falsos positivos)", style = MaterialTheme.typography.bodySmall)
-        Slider(
-            value = local,
-            onValueChange = { local = it },
-            onValueChangeFinished = { onCommit(local) },
-            valueRange = 0.30f..0.98f,
-        )
     }
 }
 

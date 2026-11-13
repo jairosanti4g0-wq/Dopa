@@ -3,8 +3,7 @@ package com.dopa.cleaner.classifier
 import android.content.Context
 import android.graphics.Bitmap
 import com.dopa.cleaner.core.NsfwScores
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.channels.Channel
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
@@ -15,40 +14,51 @@ import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 
 class NsfwClassifier private constructor(
-    private val interpreter: Interpreter,
-    private val inputW: Int,
-    private val inputH: Int,
+    private val slots: List<Slot>,
 ) : AutoCloseable {
 
-    private val mutex = Mutex()
-    private val input: ByteBuffer = ByteBuffer
-        .allocateDirect(4 * inputW * inputH * 3)
-        .order(ByteOrder.nativeOrder())
-    private val pixels = IntArray(inputW * inputH)
-    private val output = Array(1) { FloatArray(NsfwScores.LABELS.size) }
+    private val pool = Channel<Slot>(capacity = slots.size).apply { slots.forEach { trySend(it) } }
 
-    suspend fun classify(bitmap: Bitmap): NsfwScores = mutex.withLock {
-        val scaled = if (bitmap.width == inputW && bitmap.height == inputH && bitmap.config == Bitmap.Config.ARGB_8888) {
-            bitmap
-        } else {
+    val parallelism: Int get() = slots.size
+
+    private class Slot(val interpreter: Interpreter, private val inputW: Int, private val inputH: Int) {
+        val input: ByteBuffer = ByteBuffer.allocateDirect(4 * inputW * inputH * 3).order(ByteOrder.nativeOrder())
+        val pixels = IntArray(inputW * inputH)
+        val output = Array(1) { FloatArray(NsfwScores.LABELS.size) }
+
+        fun run(bitmap: Bitmap): NsfwScores {
             val argb = if (bitmap.config == Bitmap.Config.ARGB_8888) bitmap else bitmap.copy(Bitmap.Config.ARGB_8888, false)
                 ?: throw IllegalStateException("Bitmap conversion failed")
-            Bitmap.createScaledBitmap(argb, inputW, inputH, true)
+            val scaled = if (argb.width == inputW && argb.height == inputH) argb else Bitmap.createScaledBitmap(argb, inputW, inputH, true)
+            try {
+                scaled.getPixels(pixels, 0, inputW, 0, 0, inputW, inputH)
+            } finally {
+                if (scaled !== bitmap && scaled !== argb) scaled.recycle()
+                if (argb !== bitmap) argb.recycle()
+            }
+            input.rewind()
+            for (p in pixels) {
+                input.putFloat(((p shr 16) and 0xFF) / 255f)
+                input.putFloat(((p shr 8) and 0xFF) / 255f)
+                input.putFloat((p and 0xFF) / 255f)
+            }
+            input.rewind()
+            interpreter.run(input, output)
+            return NsfwScores.fromArray(output[0].copyOf())
         }
-        scaled.getPixels(pixels, 0, inputW, 0, 0, inputW, inputH)
-        input.rewind()
-        for (p in pixels) {
-            input.putFloat(((p shr 16) and 0xFF) / 255f)
-            input.putFloat(((p shr 8) and 0xFF) / 255f)
-            input.putFloat((p and 0xFF) / 255f)
+    }
+
+    suspend fun classify(bitmap: Bitmap): NsfwScores {
+        val slot = pool.receive()
+        try {
+            return slot.run(bitmap)
+        } finally {
+            pool.trySend(slot)
         }
-        input.rewind()
-        interpreter.run(input, output)
-        NsfwScores.fromArray(output[0].copyOf())
     }
 
     override fun close() {
-        interpreter.close()
+        slots.forEach { runCatching { it.interpreter.close() } }
     }
 
     companion object {
@@ -57,17 +67,20 @@ class NsfwClassifier private constructor(
         @Throws(IOException::class)
         fun create(context: Context): NsfwClassifier {
             val model = loadModel(context)
-            val options = Interpreter.Options().apply {
-                setNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(1, 4))
+            val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+            val instances = (cores / 2).coerceIn(1, 4)
+            val threadsEach = (cores / instances).coerceIn(1, 4)
+            val interpreters = (0 until instances).map {
+                Interpreter(model.duplicate().order(ByteOrder.nativeOrder()), Interpreter.Options().setNumThreads(threadsEach))
             }
-            val interpreter = Interpreter(model, options)
-            val inTensor = interpreter.getInputTensor(0)
+            val first = interpreters.first()
+            val inTensor = first.getInputTensor(0)
             val shape = inTensor.shape()
             require(shape.size == 4 && shape[3] == 3) { "Unexpected input shape ${shape.contentToString()}" }
             require(inTensor.dataType() == DataType.FLOAT32) { "Unexpected input type ${inTensor.dataType()}" }
-            val outShape = interpreter.getOutputTensor(0).shape()
+            val outShape = first.getOutputTensor(0).shape()
             require(outShape.last() == NsfwScores.LABELS.size) { "Unexpected output shape ${outShape.contentToString()}" }
-            return NsfwClassifier(interpreter, inputW = shape[2], inputH = shape[1])
+            return NsfwClassifier(interpreters.map { Slot(it, inputW = shape[2], inputH = shape[1]) })
         }
 
         private fun loadModel(context: Context): MappedByteBuffer {

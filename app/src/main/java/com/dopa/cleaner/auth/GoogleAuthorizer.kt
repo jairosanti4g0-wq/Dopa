@@ -3,7 +3,10 @@ package com.dopa.cleaner.auth
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import com.dopa.cleaner.core.AppSignature
 import com.dopa.cleaner.core.AuthRequiredException
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
@@ -20,6 +23,8 @@ sealed interface AuthOutcome {
     data class NeedsConsent(val pendingIntent: PendingIntent) : AuthOutcome
 }
 
+class GoogleSetupException(message: String, cause: Throwable) : Exception(message, cause)
+
 class GoogleAuthorizer(private val context: Context) {
 
     private fun request(scopes: List<String>): AuthorizationRequest =
@@ -28,8 +33,22 @@ class GoogleAuthorizer(private val context: Context) {
             .build()
 
     suspend fun authorize(scopes: List<String>): AuthOutcome {
-        val result: AuthorizationResult = Identity.getAuthorizationClient(context).authorize(request(scopes)).await()
+        val result: AuthorizationResult = try {
+            Identity.getAuthorizationClient(context).authorize(request(scopes)).await()
+        } catch (e: ApiException) {
+            throw GoogleSetupException(explain(e.statusCode), e)
+        }
         return toOutcome(result)
+    }
+
+    private fun explain(code: Int): String = when (code) {
+        CommonStatusCodes.DEVELOPER_ERROR ->
+            "Google recusou o app (DEVELOPER_ERROR). Cadastre um OAuth client Android no Google Cloud com pacote " +
+                "${context.packageName} e SHA-1 ${AppSignature.sha1(context) ?: "?"} (veja Configurações > Conta Google)."
+        CommonStatusCodes.NETWORK_ERROR -> "Sem conexão com os servidores do Google."
+        CommonStatusCodes.SIGN_IN_REQUIRED -> "Nenhuma conta Google no aparelho. Adicione uma em Configurações do Android."
+        CommonStatusCodes.CANCELED -> "Login cancelado."
+        else -> "Falha de autorização Google (código $code)."
     }
 
     fun parseConsentResult(data: Intent?): AuthOutcome {

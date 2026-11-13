@@ -5,13 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import java.io.File
 import java.nio.ByteBuffer
 import kotlin.math.max
 
 object BitmapLoader {
-    private const val VIDEO_SAMPLES = 3
-
     private fun ImageDecoder.Source.decodeScaled(targetPx: Int): Bitmap =
         ImageDecoder.decodeBitmap(this) { decoder, info, _ ->
             decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
@@ -34,7 +33,20 @@ object BitmapLoader {
     fun decodeUri(context: Context, uri: Uri, targetPx: Int): Bitmap =
         ImageDecoder.createSource(context.contentResolver, uri).decodeScaled(targetPx)
 
-    fun videoFrames(targetPx: Int, configure: (MediaMetadataRetriever) -> Unit): List<Bitmap> {
+    fun exifThumbnail(file: File, minPx: Int): Bitmap? = runCatching {
+        val exif = ExifInterface(file)
+        if (!exif.hasThumbnail()) return null
+        val bmp = exif.thumbnailBitmap ?: return null
+        if (max(bmp.width, bmp.height) < minPx) {
+            bmp.recycle()
+            null
+        } else {
+            bmp
+        }
+    }.getOrNull()
+
+    fun videoFrames(targetPx: Int, count: Int, configure: (MediaMetadataRetriever) -> Unit): List<Bitmap> {
+        val samples = count.coerceIn(1, 5)
         val retriever = MediaMetadataRetriever()
         try {
             configure(retriever)
@@ -45,7 +57,7 @@ object BitmapLoader {
             val positions = if (durationMs <= 0L) {
                 listOf(0L)
             } else {
-                (1..VIDEO_SAMPLES).map { i -> durationMs * 1000L * i / (VIDEO_SAMPLES + 1) }
+                (1..samples).map { i -> durationMs * 1000L * i / (samples + 1) }
             }
             return positions.mapNotNull { us ->
                 runCatching {

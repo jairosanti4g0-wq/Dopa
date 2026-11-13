@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.os.PowerManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.dopa.cleaner.DopaApp
@@ -14,6 +15,9 @@ import com.dopa.cleaner.auth.GoogleScopes
 import com.dopa.cleaner.config.AppSettings
 import com.dopa.cleaner.config.CustomSourceConfig
 import com.dopa.cleaner.config.ScanSchedule
+import com.dopa.cleaner.config.ScanSpeed
+import com.dopa.cleaner.core.AppSignature
+import com.dopa.cleaner.core.ViewTarget
 import com.dopa.cleaner.config.SecretBox
 import com.dopa.cleaner.scan.ScanState
 import com.dopa.cleaner.service.ScanService
@@ -45,6 +49,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _hasAllFiles = MutableStateFlow(Environment.isExternalStorageManager())
     val hasAllFiles: StateFlow<Boolean> = _hasAllFiles.asStateFlow()
+
+    private val _batteryExempt = MutableStateFlow(isBatteryExempt())
+    val batteryExempt: StateFlow<Boolean> = _batteryExempt.asStateFlow()
+
+    val signatureSha1: String = AppSignature.sha1(app) ?: "indisponível"
+    val packageName: String = app.packageName
 
     private val _driveConnected = MutableStateFlow(false)
     val driveConnected: StateFlow<Boolean> = _driveConnected.asStateFlow()
@@ -88,6 +98,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshPermissions() {
         _hasAllFiles.value = Environment.isExternalStorageManager()
+        _batteryExempt.value = isBatteryExempt()
+    }
+
+    private fun isBatteryExempt(): Boolean {
+        val pm = getApplication<Application>().getSystemService(PowerManager::class.java) ?: return false
+        return pm.isIgnoringBatteryOptimizations(getApplication<Application>().packageName)
+    }
+
+    fun setSpeed(v: ScanSpeed) = viewModelScope.launch { container.settings.setSpeed(v) }
+    fun setSkipThumbs(v: Boolean) = viewModelScope.launch { container.settings.setSkipThumbs(v) }
+    fun setSkipHidden(v: Boolean) = viewModelScope.launch { container.settings.setSkipHidden(v) }
+    fun setMinKb(v: Int) = viewModelScope.launch { container.settings.setMinKb(v) }
+    fun setBlur(v: Boolean) = viewModelScope.launch { container.settings.setBlur(v) }
+
+    suspend fun viewTarget(key: String, videoStream: Boolean): Result<ViewTarget> = runCatching {
+        container.engine.viewTarget(key, videoStream)
+    }
+
+    fun deleteOne(key: String) {
+        _selected.value = setOf(key)
+        deleteSelected()
+    }
+
+    fun dismissOne(key: String) {
+        container.engine.dismiss(listOf(key))
+        _selected.update { it - key }
     }
 
     fun setThreshold(v: Float) = viewModelScope.launch { container.settings.setThreshold(v) }
@@ -133,7 +169,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             throw e
         } catch (e: Exception) {
             _driveConnected.value = false
-            toast("Google Drive: ${e.message ?: "falha na autorização"}. Verifique o OAuth client (pacote + SHA-1).")
+            toast("Google Drive: ${e.message ?: "falha na autorização"}")
             false
         }
     }
@@ -213,7 +249,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return@launch
         }
         _selected.value = emptySet()
-        val started = runCatching { container.engine.start(built.sources, s.threshold) }.getOrElse {
+        val started = runCatching { container.engine.start(built.sources, s.threshold, s.options.speed) }.getOrElse {
             toast(it.message ?: "Falha ao iniciar")
             false
         }

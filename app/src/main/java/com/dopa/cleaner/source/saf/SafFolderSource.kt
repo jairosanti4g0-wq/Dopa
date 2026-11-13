@@ -7,9 +7,11 @@ import android.provider.DocumentsContract
 import android.util.Size
 import com.dopa.cleaner.core.BitmapLoader
 import com.dopa.cleaner.core.DeleteResult
+import com.dopa.cleaner.core.FrameRequest
 import com.dopa.cleaner.core.MediaRef
 import com.dopa.cleaner.core.MediaSource
 import com.dopa.cleaner.core.MediaTypes
+import com.dopa.cleaner.core.ViewTarget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -71,18 +73,22 @@ class SafFolderSource(
         }
     }.flowOn(Dispatchers.IO)
 
-    override suspend fun loadFrames(ref: MediaRef, targetPx: Int): List<Bitmap> = withContext(Dispatchers.IO) {
+    override suspend fun loadFrames(ref: MediaRef, request: FrameRequest): List<Bitmap> = withContext(Dispatchers.IO) {
+        val targetPx = request.targetPx
         val uri = Uri.parse(ref.itemId)
         val thumb = runCatching { context.contentResolver.loadThumbnail(uri, Size(targetPx, targetPx), null) }.getOrNull()
         when {
             thumb != null && !ref.isVideo -> listOf(thumb)
             ref.isVideo -> {
-                val frames = runCatching { BitmapLoader.videoFrames(targetPx) { it.setDataSource(context, uri) } }.getOrDefault(emptyList())
+                val frames = runCatching { BitmapLoader.videoFrames(targetPx, request.videoFrames) { it.setDataSource(context, uri) } }.getOrDefault(emptyList())
                 frames.ifEmpty { listOfNotNull(thumb) }
             }
             else -> listOf(BitmapLoader.decodeUri(context, uri, targetPx))
         }
     }
+
+    override suspend fun viewTarget(ref: MediaRef, videoStream: Boolean): ViewTarget =
+        ViewTarget.Local(Uri.parse(ref.itemId))
 
     override suspend fun delete(ref: MediaRef): DeleteResult = withContext(Dispatchers.IO) {
         try {

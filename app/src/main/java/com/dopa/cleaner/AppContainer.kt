@@ -44,7 +44,6 @@ class AppContainer(context: Context) {
     val settings = SettingsRepository(app)
     val authorizer = GoogleAuthorizer(app)
     val photosClient = GooglePhotosPickerClient(authorizer)
-    val local = LocalStorageSource(app)
     private val previews = PreviewStore(File(app.noBackupFilesDir, "previews"))
     private val store = ScanStore(app)
 
@@ -72,7 +71,7 @@ class AppContainer(context: Context) {
     fun buildSources(s: AppSettings, interactive: Boolean = true): SourceBuildResult {
         val out = mutableListOf<MediaSource>()
         val warnings = mutableListOf<String>()
-        if (s.localEnabled) out += local
+        if (s.localEnabled) out += LocalStorageSource(app, s.options)
         if (s.driveEnabled) out += GoogleDriveSource(authorizer)
         if (s.photosEnabled && interactive) {
             val p = _picked.value

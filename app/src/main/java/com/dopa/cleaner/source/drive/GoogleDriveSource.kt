@@ -5,10 +5,12 @@ import com.dopa.cleaner.auth.GoogleAuthorizer
 import com.dopa.cleaner.auth.GoogleScopes
 import com.dopa.cleaner.core.BitmapLoader
 import com.dopa.cleaner.core.DeleteResult
+import com.dopa.cleaner.core.FrameRequest
 import com.dopa.cleaner.core.Http
 import com.dopa.cleaner.core.HttpStatusException
 import com.dopa.cleaner.core.MediaRef
 import com.dopa.cleaner.core.MediaSource
+import com.dopa.cleaner.core.ViewTarget
 import com.dopa.cleaner.core.expectSuccess
 import com.dopa.cleaner.core.readBytes
 import com.dopa.cleaner.core.readString
@@ -85,7 +87,8 @@ class GoogleDriveSource(private val authorizer: GoogleAuthorizer) : MediaSource 
         } while (pageToken != null)
     }.flowOn(Dispatchers.IO)
 
-    override suspend fun loadFrames(ref: MediaRef, targetPx: Int): List<Bitmap> = withContext(Dispatchers.IO) {
+    override suspend fun loadFrames(ref: MediaRef, request: FrameRequest): List<Bitmap> = withContext(Dispatchers.IO) {
+        val targetPx = request.targetPx
         val token = token()
         val thumb = thumbnails[ref.itemId]
         if (thumb != null) {
@@ -99,6 +102,11 @@ class GoogleDriveSource(private val authorizer: GoogleAuthorizer) : MediaSource 
         val url = "$API/files/${ref.itemId}".toHttpUrl().newBuilder().addQueryParameter("alt", "media").build()
         val bytes = Http.client.readBytes(Request.Builder().url(url).auth(token).build())
         listOf(BitmapLoader.decodeBytes(bytes, targetPx))
+    }
+
+    override suspend fun viewTarget(ref: MediaRef, videoStream: Boolean): ViewTarget {
+        val url = "$API/files/${ref.itemId}".toHttpUrl().newBuilder().addQueryParameter("alt", "media").build()
+        return ViewTarget.Remote(url.toString(), mapOf("Authorization" to "Bearer ${token()}"))
     }
 
     override suspend fun delete(ref: MediaRef): DeleteResult = withContext(Dispatchers.IO) {

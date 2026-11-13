@@ -74,7 +74,7 @@ class ScheduledScanWorker(context: Context, params: WorkerParameters) : Coroutin
         val sources = built.sources.filter { it.id != LocalStorageSource.ID || Environment.isExternalStorageManager() }
         if (sources.isEmpty()) return Result.success()
         runCatching { setForeground(foregroundInfo()) }
-        val started = runCatching { container.engine.start(sources, settings.threshold) }.getOrDefault(false)
+        val started = runCatching { container.engine.start(sources, settings.threshold, settings.options.speed) }.getOrDefault(false)
         if (!started) return Result.success()
         val final = try {
             container.engine.awaitIdle()

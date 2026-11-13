@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -47,9 +48,24 @@ sealed interface CustomSourceConfig {
 
 enum class ScanSchedule { OFF, DAILY, WEEKLY }
 
+enum class ScanSpeed(val label: String, val videoFrames: Int, val useExifThumb: Boolean) {
+    FAST("Rápido", 1, true),
+    BALANCED("Equilibrado", 2, true),
+    PRECISE("Preciso", 3, false),
+}
+
+data class ScanOptions(
+    val speed: ScanSpeed = ScanSpeed.BALANCED,
+    val skipThumbnailDirs: Boolean = true,
+    val skipHiddenDirs: Boolean = false,
+    val minFileKb: Int = 8,
+)
+
 data class AppSettings(
     val threshold: Float,
     val schedule: ScanSchedule,
+    val options: ScanOptions,
+    val blurPreviews: Boolean,
     val localEnabled: Boolean,
     val driveEnabled: Boolean,
     val photosEnabled: Boolean,
@@ -70,12 +86,24 @@ class SettingsRepository(private val context: Context) {
         val CUSTOM = stringPreferencesKey("custom_sources")
         val DISABLED = stringPreferencesKey("disabled_custom")
         val SCHEDULE = stringPreferencesKey("schedule")
+        val SPEED = stringPreferencesKey("speed")
+        val SKIP_THUMBS = booleanPreferencesKey("skip_thumbs")
+        val SKIP_HIDDEN = booleanPreferencesKey("skip_hidden")
+        val MIN_KB = intPreferencesKey("min_kb")
+        val BLUR = booleanPreferencesKey("blur")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
         AppSettings(
             threshold = (p[Keys.THRESHOLD] ?: DEFAULT_THRESHOLD).coerceIn(MIN_THRESHOLD, MAX_THRESHOLD),
             schedule = p[Keys.SCHEDULE]?.let { raw -> ScanSchedule.entries.firstOrNull { it.name == raw } } ?: ScanSchedule.OFF,
+            options = ScanOptions(
+                speed = p[Keys.SPEED]?.let { raw -> ScanSpeed.entries.firstOrNull { it.name == raw } } ?: ScanSpeed.BALANCED,
+                skipThumbnailDirs = p[Keys.SKIP_THUMBS] ?: true,
+                skipHiddenDirs = p[Keys.SKIP_HIDDEN] ?: false,
+                minFileKb = (p[Keys.MIN_KB] ?: 8).coerceIn(0, 1024),
+            ),
+            blurPreviews = p[Keys.BLUR] ?: true,
             localEnabled = p[Keys.LOCAL] ?: true,
             driveEnabled = p[Keys.DRIVE] ?: false,
             photosEnabled = p[Keys.PHOTOS] ?: false,
@@ -91,6 +119,12 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setSchedule(value: ScanSchedule) = context.dataStore.edit { it[Keys.SCHEDULE] = value.name }
+
+    suspend fun setSpeed(value: ScanSpeed) = context.dataStore.edit { it[Keys.SPEED] = value.name }
+    suspend fun setSkipThumbs(value: Boolean) = context.dataStore.edit { it[Keys.SKIP_THUMBS] = value }
+    suspend fun setSkipHidden(value: Boolean) = context.dataStore.edit { it[Keys.SKIP_HIDDEN] = value }
+    suspend fun setMinKb(value: Int) = context.dataStore.edit { it[Keys.MIN_KB] = value.coerceIn(0, 1024) }
+    suspend fun setBlur(value: Boolean) = context.dataStore.edit { it[Keys.BLUR] = value }
 
     suspend fun setLocal(enabled: Boolean) = context.dataStore.edit { it[Keys.LOCAL] = enabled }
     suspend fun setDrive(enabled: Boolean) = context.dataStore.edit { it[Keys.DRIVE] = enabled }
