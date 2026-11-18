@@ -6,6 +6,8 @@ import com.dopa.cleaner.core.NsfwScores
 import kotlinx.coroutines.channels.Channel
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.CompatibilityList
+import org.tensorflow.lite.gpu.GpuDelegate
 import java.io.FileInputStream
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -15,13 +17,19 @@ import java.nio.channels.FileChannel
 
 class NsfwClassifier private constructor(
     private val slots: List<Slot>,
+    val usingGpu: Boolean,
 ) : AutoCloseable {
 
     private val pool = Channel<Slot>(capacity = slots.size).apply { slots.forEach { trySend(it) } }
 
     val parallelism: Int get() = slots.size
 
-    private class Slot(val interpreter: Interpreter, private val inputW: Int, private val inputH: Int) {
+    private class Slot(
+        val interpreter: Interpreter,
+        private val inputW: Int,
+        private val inputH: Int,
+        val delegate: AutoCloseable? = null,
+    ) {
         val input: ByteBuffer = ByteBuffer.allocateDirect(4 * inputW * inputH * 3).order(ByteOrder.nativeOrder())
         val pixels = IntArray(inputW * inputH)
         val output = Array(1) { FloatArray(NsfwScores.LABELS.size) }
@@ -58,21 +66,27 @@ class NsfwClassifier private constructor(
     }
 
     override fun close() {
-        slots.forEach { runCatching { it.interpreter.close() } }
+        slots.forEach {
+            runCatching { it.interpreter.close() }
+            runCatching { it.delegate?.close() }
+        }
     }
 
     companion object {
         const val MODEL_ASSET = "models/nsfw_mobilenet_v2_140_224.tflite"
 
         @Throws(IOException::class)
-        fun create(context: Context): NsfwClassifier {
+        fun create(context: Context, useGpu: Boolean = false): NsfwClassifier {
             val model = loadModel(context)
             val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
             val instances = (cores / 2).coerceIn(1, 4)
             val threadsEach = (cores / instances).coerceIn(1, 4)
-            val interpreters = (0 until instances).map {
+            val gpuPair = if (useGpu) createGpuInterpreter(model) else null
+            val cpuCount = if (gpuPair != null) (instances - 1).coerceAtLeast(1) else instances
+            val cpu = (0 until cpuCount).map {
                 Interpreter(model.duplicate().order(ByteOrder.nativeOrder()), Interpreter.Options().setNumThreads(threadsEach))
             }
+            val interpreters = listOfNotNull(gpuPair?.first) + cpu
             val first = interpreters.first()
             val inTensor = first.getInputTensor(0)
             val shape = inTensor.shape()
@@ -80,7 +94,28 @@ class NsfwClassifier private constructor(
             require(inTensor.dataType() == DataType.FLOAT32) { "Unexpected input type ${inTensor.dataType()}" }
             val outShape = first.getOutputTensor(0).shape()
             require(outShape.last() == NsfwScores.LABELS.size) { "Unexpected output shape ${outShape.contentToString()}" }
-            return NsfwClassifier(interpreters.map { Slot(it, inputW = shape[2], inputH = shape[1]) })
+            val slots = interpreters.map { interp ->
+                Slot(interp, inputW = shape[2], inputH = shape[1], delegate = if (interp === gpuPair?.first) gpuPair.second else null)
+            }
+            return NsfwClassifier(slots, usingGpu = gpuPair != null)
+        }
+
+        private fun createGpuInterpreter(model: MappedByteBuffer): Pair<Interpreter, AutoCloseable>? {
+            val compat = runCatching { CompatibilityList() }.getOrNull() ?: return null
+            return try {
+                if (!compat.isDelegateSupportedOnThisDevice) return null
+                val delegate = GpuDelegate(compat.bestOptionsForThisDevice)
+                try {
+                    Interpreter(model.duplicate().order(ByteOrder.nativeOrder()), Interpreter.Options().addDelegate(delegate)) to delegate
+                } catch (e: Throwable) {
+                    delegate.close()
+                    null
+                }
+            } catch (e: Throwable) {
+                null
+            } finally {
+                runCatching { compat.close() }
+            }
         }
 
         private fun loadModel(context: Context): MappedByteBuffer {

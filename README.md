@@ -16,9 +16,19 @@ Vídeos: 3 quadros (25/50/75%), vale o de maior risco.
 
 ## Velocidade e segundo plano
 
-- Modos em Configurações: Rápido (miniatura EXIF embutida + 1 quadro/vídeo), Equilibrado (EXIF + 2 quadros), Preciso (decodifica tudo + 3 quadros).
-- Pool de interpretadores TFLite (núcleos/2) e workers ≈ núcleos + pool.
-- Varredura em serviço foreground com WakeLock parcial: continua com tela apagada ou em outro app. Em Configurações há o atalho para remover a otimização de bateria (necessário em Xiaomi/Samsung/Motorola agressivos).
+- Padrão: lista mídia pelo índice do Android (MediaStore) e classifica a miniatura já gerada pelo sistema (fotos e vídeos) — sem decodificar arquivo inteiro nem abrir vídeo. "Varredura profunda" volta a percorrer pasta por pasta (inclui ocultas/.nomedia).
+- Imagens menores que N px são puladas pelo tamanho registrado no índice, sem abrir o arquivo.
+- GPU opcional (TFLite GPU delegate) + pool de interpretadores CPU; workers ≈ núcleos + pool.
+- Modos: Rápido (miniatura, 1 quadro/vídeo), Equilibrado (miniatura + 1 quadro extra), Preciso (decodifica tudo + 3 quadros).
+- Progresso com total real, itens/s e notificação com barra; aviso ao terminar.
+- Serviço foreground com WakeLock parcial; atalho para tirar o app da otimização de bateria.
+
+## Detecção configurável
+
+- Categorias: Pornografia, Hentai/desenho, Sensual. O risco é a soma das categorias ativas.
+- Pastas ignoradas por trecho de caminho (vale para todas as fontes).
+- Resultados: busca por nome/pasta, filtro foto/vídeo e por fonte, risco mínimo, ordenação por risco/tamanho/nome/fonte.
+- Bloqueio do app com biometria/PIN (após 30 s fora do app).
 
 ## Visualizador
 

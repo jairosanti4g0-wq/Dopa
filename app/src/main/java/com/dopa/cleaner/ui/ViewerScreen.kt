@@ -84,9 +84,8 @@ private sealed interface Loaded<out T> {
 
 @Composable
 fun ViewerScreen(vm: MainViewModel, startKey: String, onBack: () -> Unit) {
-    val scan by vm.scan.collectAsStateWithLifecycle()
+    val findings by vm.visibleFindings.collectAsStateWithLifecycle()
     val selected by vm.selected.collectAsStateWithLifecycle()
-    val findings = scan.findings
     if (findings.isEmpty()) {
         LaunchedEffect(Unit) { onBack() }
         return
@@ -115,7 +114,7 @@ fun ViewerScreen(vm: MainViewModel, startKey: String, onBack: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text(current?.ref?.name.orEmpty(), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    "${pager.currentPage + 1}/${findings.size} · risco ${pct(current?.scores?.unsafe ?: 0f)}",
+                    "${pager.currentPage + 1}/${findings.size} · risco ${pct(current?.risk ?: 0f)}",
                     color = Color.White.copy(alpha = 0.8f),
                     style = MaterialTheme.typography.labelSmall,
                 )

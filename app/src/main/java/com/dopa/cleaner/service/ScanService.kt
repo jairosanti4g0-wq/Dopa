@@ -59,6 +59,7 @@ class ScanService : LifecycleService() {
         acquireWakeLock()
         val engine = (application as DopaApp).container.engine
         lifecycleScope.launch {
+            var announced = false
             engine.state.collect { s ->
                 if (s.running) {
                     if (canNotify()) {
@@ -70,12 +71,38 @@ class ScanService : LifecycleService() {
                     }
                 } else {
                     releaseWakeLock()
+                    if (!announced && s.finishedAt != null) {
+                        announced = true
+                        notifyFinished(s)
+                    }
                     ServiceCompat.stopForeground(this@ScanService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
             }
         }
         return START_NOT_STICKY
+    }
+
+    private suspend fun notifyFinished(s: ScanState) {
+        val settings = runCatching { (application as DopaApp).container.settings.current() }.getOrNull() ?: return
+        if (!settings.notifyOnFinish || !canNotify()) return
+        val open = PendingIntent.getActivity(
+            this, 3, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val n = NotificationCompat.Builder(this, DopaApp.CHANNEL_RESULTS)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("Varredura concluída")
+            .setContentText("${s.processed} verificados · ${s.flagged} para revisar")
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setContentIntent(open)
+            .build()
+        try {
+            NotificationManagerCompat.from(this).notify(RESULT_NOTIF_ID, n)
+        } catch (e: SecurityException) {
+            Unit
+        }
     }
 
     private fun canNotify(): Boolean =
@@ -94,18 +121,28 @@ class ScanService : LifecycleService() {
         return NotificationCompat.Builder(this, DopaApp.CHANNEL_SCAN)
             .setSmallIcon(R.drawable.ic_stat)
             .setContentTitle("Varrendo ${s.currentSource ?: "…"}")
-            .setContentText("${s.scanned + s.cached} verificados · ${s.flagged} sinalizados · roda com a tela apagada")
+            .setContentText(
+                buildString {
+                    append("${s.processed}")
+                    if (s.totalKnown) append("/${s.total}")
+                    append(" verificados · ${s.flagged} sinalizados · ${"%.0f".format(s.perSecond)}/s")
+                },
+            )
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setContentIntent(open)
             .addAction(0, "Cancelar", cancel)
-            .setProgress(0, 0, true)
+            .apply {
+                val pct = s.progress
+                if (pct != null) setProgress(1000, (pct * 1000).toInt(), false) else setProgress(0, 0, true)
+            }
             .build()
     }
 
     companion object {
         private const val NOTIF_ID = 42
+        private const val RESULT_NOTIF_ID = 45
         private const val WAKE_TIMEOUT_MS = 6L * 60 * 60 * 1000
         private const val ACTION_CANCEL = "com.dopa.cleaner.CANCEL"
 

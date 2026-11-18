@@ -10,6 +10,7 @@ import com.dopa.cleaner.config.SecretBox
 import com.dopa.cleaner.config.SettingsRepository
 import com.dopa.cleaner.core.MediaSource
 import com.dopa.cleaner.scan.PreviewStore
+import com.dopa.cleaner.scan.ScanConfig
 import com.dopa.cleaner.scan.ScanEngine
 import com.dopa.cleaner.scan.ScanStore
 import com.dopa.cleaner.source.drive.GoogleDriveSource
@@ -50,12 +51,28 @@ class AppContainer(context: Context) {
     private val classifierLock = Mutex()
     private var classifier: NsfwClassifier? = null
 
-    private suspend fun classifier(): NsfwClassifier = classifierLock.withLock {
-        classifier ?: withContext(Dispatchers.IO) { NsfwClassifier.create(app) }.also { classifier = it }
+    private var classifierGpu: Boolean? = null
+
+    private suspend fun classifier(useGpu: Boolean): NsfwClassifier = classifierLock.withLock {
+        val existing = classifier
+        if (existing != null && classifierGpu == useGpu) return@withLock existing
+        existing?.close()
+        withContext(Dispatchers.IO) { NsfwClassifier.create(app, useGpu) }.also {
+            classifier = it
+            classifierGpu = useGpu
+        }
     }
 
+    fun scanConfig(s: AppSettings) = ScanConfig(
+        threshold = s.threshold,
+        speed = s.options.speed,
+        categories = s.categories,
+        options = s.options,
+        useGpu = s.useGpu,
+    )
+
     val engine = ScanEngine(
-        classifierProvider = { classifier() },
+        classifierProvider = { gpu -> classifier(gpu) },
         previews = previews,
         store = store,
         sourceResolver = { id -> buildSources(settings.current()).sources.firstOrNull { it.id == id } },

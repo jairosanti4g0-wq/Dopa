@@ -10,6 +10,9 @@ data class MediaRef(
     val sizeBytes: Long?,
     val location: String,
     val version: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    val extra: String? = null,
 ) {
     val key: String get() = "$sourceId|$itemId"
     val isVideo: Boolean get() = mimeType.startsWith("video/")
@@ -24,6 +27,14 @@ data class NsfwScores(
 ) {
     val unsafe: Float get() = (porn + hentai + sexy).coerceIn(0f, 1f)
 
+    fun risk(categories: RiskCategories): Float {
+        var r = 0f
+        if (categories.porn) r += porn
+        if (categories.hentai) r += hentai
+        if (categories.sexy) r += sexy
+        return r.coerceIn(0f, 1f)
+    }
+
     companion object {
         val LABELS = listOf("drawings", "hentai", "neutral", "porn", "sexy")
 
@@ -36,12 +47,21 @@ data class NsfwScores(
     }
 }
 
+data class RiskCategories(
+    val porn: Boolean = true,
+    val hentai: Boolean = true,
+    val sexy: Boolean = true,
+) {
+    val any: Boolean get() = porn || hentai || sexy
+}
+
 data class Finding(
     val ref: MediaRef,
     val sourceName: String,
     val canDelete: Boolean,
     val scores: NsfwScores,
     val preview: File?,
+    val risk: Float = scores.unsafe,
 )
 
 sealed interface DeleteResult {

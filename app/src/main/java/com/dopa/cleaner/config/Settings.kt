@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.dopa.cleaner.core.RiskCategories
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -59,13 +60,27 @@ data class ScanOptions(
     val skipThumbnailDirs: Boolean = true,
     val skipHiddenDirs: Boolean = false,
     val minFileKb: Int = 8,
-)
+    val minImagePx: Int = 160,
+    val deepScan: Boolean = false,
+    val excludedPaths: List<String> = DEFAULT_EXCLUDED,
+) {
+    fun isExcluded(path: String): Boolean =
+        excludedPaths.any { it.isNotBlank() && path.contains(it.trim(), ignoreCase = true) }
+
+    companion object {
+        val DEFAULT_EXCLUDED = listOf("/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Stickers")
+    }
+}
 
 data class AppSettings(
     val threshold: Float,
     val schedule: ScanSchedule,
     val options: ScanOptions,
     val blurPreviews: Boolean,
+    val categories: RiskCategories,
+    val useGpu: Boolean,
+    val appLock: Boolean,
+    val notifyOnFinish: Boolean,
     val localEnabled: Boolean,
     val driveEnabled: Boolean,
     val photosEnabled: Boolean,
@@ -91,6 +106,15 @@ class SettingsRepository(private val context: Context) {
         val SKIP_HIDDEN = booleanPreferencesKey("skip_hidden")
         val MIN_KB = intPreferencesKey("min_kb")
         val BLUR = booleanPreferencesKey("blur")
+        val MIN_PX = intPreferencesKey("min_px")
+        val DEEP = booleanPreferencesKey("deep_scan")
+        val EXCLUDED = stringPreferencesKey("excluded_paths")
+        val CAT_PORN = booleanPreferencesKey("cat_porn")
+        val CAT_HENTAI = booleanPreferencesKey("cat_hentai")
+        val CAT_SEXY = booleanPreferencesKey("cat_sexy")
+        val GPU = booleanPreferencesKey("use_gpu")
+        val LOCK = booleanPreferencesKey("app_lock")
+        val NOTIFY = booleanPreferencesKey("notify_finish")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -102,8 +126,21 @@ class SettingsRepository(private val context: Context) {
                 skipThumbnailDirs = p[Keys.SKIP_THUMBS] ?: true,
                 skipHiddenDirs = p[Keys.SKIP_HIDDEN] ?: false,
                 minFileKb = (p[Keys.MIN_KB] ?: 8).coerceIn(0, 1024),
+                minImagePx = (p[Keys.MIN_PX] ?: 160).coerceIn(0, 2048),
+                deepScan = p[Keys.DEEP] ?: false,
+                excludedPaths = p[Keys.EXCLUDED]?.let { raw ->
+                    runCatching { json.decodeFromString<List<String>>(raw) }.getOrNull()
+                } ?: ScanOptions.DEFAULT_EXCLUDED,
             ),
             blurPreviews = p[Keys.BLUR] ?: true,
+            categories = RiskCategories(
+                porn = p[Keys.CAT_PORN] ?: true,
+                hentai = p[Keys.CAT_HENTAI] ?: true,
+                sexy = p[Keys.CAT_SEXY] ?: true,
+            ),
+            useGpu = p[Keys.GPU] ?: false,
+            appLock = p[Keys.LOCK] ?: false,
+            notifyOnFinish = p[Keys.NOTIFY] ?: true,
             localEnabled = p[Keys.LOCAL] ?: true,
             driveEnabled = p[Keys.DRIVE] ?: false,
             photosEnabled = p[Keys.PHOTOS] ?: false,
@@ -125,6 +162,30 @@ class SettingsRepository(private val context: Context) {
     suspend fun setSkipHidden(value: Boolean) = context.dataStore.edit { it[Keys.SKIP_HIDDEN] = value }
     suspend fun setMinKb(value: Int) = context.dataStore.edit { it[Keys.MIN_KB] = value.coerceIn(0, 1024) }
     suspend fun setBlur(value: Boolean) = context.dataStore.edit { it[Keys.BLUR] = value }
+    suspend fun setMinPx(value: Int) = context.dataStore.edit { it[Keys.MIN_PX] = value.coerceIn(0, 2048) }
+    suspend fun setDeepScan(value: Boolean) = context.dataStore.edit { it[Keys.DEEP] = value }
+    suspend fun setGpu(value: Boolean) = context.dataStore.edit { it[Keys.GPU] = value }
+    suspend fun setAppLock(value: Boolean) = context.dataStore.edit { it[Keys.LOCK] = value }
+    suspend fun setNotify(value: Boolean) = context.dataStore.edit { it[Keys.NOTIFY] = value }
+
+    suspend fun setCategories(value: RiskCategories) = context.dataStore.edit {
+        it[Keys.CAT_PORN] = value.porn
+        it[Keys.CAT_HENTAI] = value.hentai
+        it[Keys.CAT_SEXY] = value.sexy
+    }
+
+    suspend fun addExcluded(path: String) = context.dataStore.edit { p ->
+        val current = p[Keys.EXCLUDED]?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }
+            ?: ScanOptions.DEFAULT_EXCLUDED
+        val clean = path.trim()
+        if (clean.isNotEmpty() && clean !in current) p[Keys.EXCLUDED] = json.encodeToString(current + clean)
+    }
+
+    suspend fun removeExcluded(path: String) = context.dataStore.edit { p ->
+        val current = p[Keys.EXCLUDED]?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }
+            ?: ScanOptions.DEFAULT_EXCLUDED
+        p[Keys.EXCLUDED] = json.encodeToString(current - path)
+    }
 
     suspend fun setLocal(enabled: Boolean) = context.dataStore.edit { it[Keys.LOCAL] = enabled }
     suspend fun setDrive(enabled: Boolean) = context.dataStore.edit { it[Keys.DRIVE] = enabled }

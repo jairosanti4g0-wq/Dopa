@@ -3,7 +3,9 @@ package com.dopa.cleaner.scan
 import android.graphics.Bitmap
 import com.dopa.cleaner.classifier.NsfwClassifier
 import com.dopa.cleaner.core.AuthRequiredException
+import com.dopa.cleaner.config.ScanOptions
 import com.dopa.cleaner.config.ScanSpeed
+import com.dopa.cleaner.core.RiskCategories
 import com.dopa.cleaner.core.DeleteResult
 import com.dopa.cleaner.core.FrameRequest
 import com.dopa.cleaner.core.ViewTarget
@@ -29,8 +31,20 @@ import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
+data class ScanConfig(
+    val threshold: Float,
+    val speed: ScanSpeed = ScanSpeed.BALANCED,
+    val categories: RiskCategories = RiskCategories(),
+    val options: ScanOptions = ScanOptions(),
+    val useGpu: Boolean = false,
+)
+
 data class ScanState(
     val running: Boolean = false,
+    val total: Int = 0,
+    val totalKnown: Boolean = false,
+    val startedAt: Long? = null,
+    val usingGpu: Boolean = false,
     val scanned: Int = 0,
     val cached: Int = 0,
     val flagged: Int = 0,
@@ -40,7 +54,17 @@ data class ScanState(
     val sourceErrors: List<String> = emptyList(),
     val findings: List<Finding> = emptyList(),
     val finishedAt: Long? = null,
-)
+) {
+    val processed: Int get() = scanned + cached + skipped + errors
+    val progress: Float? get() = if (totalKnown && total > 0) (processed.toFloat() / total).coerceIn(0f, 1f) else null
+    val perSecond: Float
+        get() {
+            val start = startedAt ?: return 0f
+            val end = finishedAt ?: System.currentTimeMillis()
+            val secs = ((end - start) / 1000f).coerceAtLeast(1f)
+            return processed / secs
+        }
+}
 
 data class DeleteReport(
     val deleted: Int,
@@ -50,7 +74,7 @@ data class DeleteReport(
 )
 
 class ScanEngine(
-    private val classifierProvider: suspend () -> NsfwClassifier,
+    private val classifierProvider: suspend (Boolean) -> NsfwClassifier,
     private val previews: PreviewStore,
     private val store: ScanStore,
     private val sourceResolver: suspend (String) -> MediaSource?,
@@ -70,6 +94,10 @@ class ScanEngine(
     @Volatile private var current: String? = null
     @Volatile private var running = false
     @Volatile private var finishedAt: Long? = null
+    @Volatile private var startedAt: Long? = null
+    @Volatile private var usingGpu = false
+    private val total = AtomicInteger()
+    @Volatile private var totalKnown = false
 
     init {
         scope.launch(Dispatchers.IO) {
@@ -83,7 +111,8 @@ class ScanEngine(
     }
 
     @Synchronized
-    fun start(list: List<MediaSource>, threshold: Float, speed: ScanSpeed = ScanSpeed.BALANCED): Boolean {
+    fun start(list: List<MediaSource>, config: ScanConfig): Boolean {
+        val speed = config.speed
         if (job?.isActive == true) return false
         require(list.isNotEmpty()) { "Nenhuma fonte selecionada" }
         list.forEach { sources[it.id] = it }
@@ -91,6 +120,9 @@ class ScanEngine(
         scanned.set(0); cached.set(0); skipped.set(0); errors.set(0)
         current = null
         finishedAt = null
+        startedAt = System.currentTimeMillis()
+        total.set(0)
+        totalKnown = false
         running = true
         publish()
         val runId = System.currentTimeMillis()
@@ -107,12 +139,16 @@ class ScanEngine(
                 }
             }
             try {
-                val classifier = classifierProvider()
+                val classifier = classifierProvider(config.useGpu)
+                usingGpu = classifier.usingGpu
+                val counts = list.map { runCatching { it.estimateCount() }.getOrNull() }
+                total.set(counts.sumOf { it ?: 0 })
+                totalKnown = counts.all { it != null }
                 for (src in list) {
                     current = src.displayName
                     val errorsBefore = errors.get()
                     try {
-                        scanSource(src, classifier, threshold, runId, request)
+                        scanSource(src, classifier, config, runId, request)
                         if (errors.get() == errorsBefore) {
                             store.prune(src.id, runId).forEach { dropLocal(it) }
                         }
@@ -146,7 +182,7 @@ class ScanEngine(
     private suspend fun scanSource(
         src: MediaSource,
         classifier: NsfwClassifier,
-        threshold: Float,
+        config: ScanConfig,
         runId: Long,
         request: FrameRequest,
     ) = coroutineScope {
@@ -161,7 +197,7 @@ class ScanEngine(
         val workers = (Runtime.getRuntime().availableProcessors() + classifier.parallelism).coerceIn(4, 12)
         repeat(workers) {
             launch(Dispatchers.IO) {
-                for (ref in channel) process(src, ref, classifier, threshold, runId, request)
+                for (ref in channel) process(src, ref, classifier, config, runId, request)
             }
         }
     }
@@ -170,21 +206,33 @@ class ScanEngine(
         src: MediaSource,
         ref: MediaRef,
         classifier: NsfwClassifier,
-        threshold: Float,
+        config: ScanConfig,
         runId: Long,
         request: FrameRequest,
     ) {
+        val threshold = config.threshold
+        if (config.options.isExcluded(ref.itemId) || config.options.isExcluded(ref.location)) {
+            skipped.incrementAndGet()
+            return
+        }
+        val w = ref.width
+        val h = ref.height
+        if (!ref.isVideo && w != null && h != null && w > 0 && h > 0 && minOf(w, h) < config.options.minImagePx) {
+            skipped.incrementAndGet()
+            return
+        }
         val hit = ref.version?.let { v -> runCatching { store.get(ref.key) }.getOrNull()?.takeIf { it.ref.version == v } }
         if (hit != null) {
             cached.incrementAndGet()
-            val flagged = hit.scores.unsafe >= threshold
+            val hitRisk = hit.scores.risk(config.categories)
+            val flagged = hitRisk >= threshold
             runCatching { store.touch(ref.key, runId, flagged, src.displayName, src.canDelete) }
             if (!flagged || hit.dismissed) {
                 findings.remove(ref.key)
                 return
             }
             val preview = previews.existing(ref.key) ?: loadPreview(src, ref, request)
-            findings[ref.key] = Finding(ref, src.displayName, src.canDelete, hit.scores, preview)
+            findings[ref.key] = Finding(ref, src.displayName, src.canDelete, hit.scores, preview, hitRisk)
             return
         }
 
@@ -195,14 +243,15 @@ class ScanEngine(
         }
         try {
             val scored = frames.map { it to classifier.classify(it) }
-            val (bestFrame, best) = scored.maxBy { it.second.unsafe }
+            val (bestFrame, best) = scored.maxBy { it.second.risk(config.categories) }
             scanned.incrementAndGet()
-            val flagged = best.unsafe >= threshold
+            val bestRisk = best.risk(config.categories)
+            val flagged = bestRisk >= threshold
             runCatching { store.upsert(ref, src.displayName, src.canDelete, best, flagged, runId) }
             val dismissed = runCatching { store.get(ref.key)?.dismissed }.getOrNull() == true
             if (flagged && !dismissed) {
                 val preview = previews.save(ref.key, bestFrame)
-                findings[ref.key] = Finding(ref, src.displayName, src.canDelete, best, preview)
+                findings[ref.key] = Finding(ref, src.displayName, src.canDelete, best, preview, bestRisk)
             } else {
                 findings.remove(ref.key)
                 previews.remove(ref.key)
@@ -302,9 +351,13 @@ class ScanEngine(
     }
 
     private fun publish() {
-        val list = findings.values.sortedByDescending { it.scores.unsafe }
+        val list = findings.values.sortedByDescending { it.risk }
         _state.value = ScanState(
             running = running,
+            total = total.get(),
+            totalKnown = totalKnown,
+            startedAt = startedAt,
+            usingGpu = usingGpu,
             scanned = scanned.get(),
             cached = cached.get(),
             flagged = list.size,

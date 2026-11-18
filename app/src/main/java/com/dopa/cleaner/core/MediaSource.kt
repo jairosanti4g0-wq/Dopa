@@ -22,6 +22,8 @@ interface MediaSource {
 
     fun enumerate(): Flow<MediaRef>
 
+    suspend fun estimateCount(): Int? = null
+
     suspend fun loadFrames(ref: MediaRef, request: FrameRequest): List<Bitmap>
 
     suspend fun viewTarget(ref: MediaRef, videoStream: Boolean): ViewTarget

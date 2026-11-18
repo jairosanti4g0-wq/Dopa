@@ -9,7 +9,12 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
 import android.widget.Toast
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResult
@@ -22,7 +27,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val vm: MainViewModel by viewModels()
     private var consentPurpose: ConsentPurpose? = null
 
@@ -61,11 +66,18 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             DopaTheme {
-                DopaRoot(
-                    vm = vm,
-                    onRequestAllFiles = ::requestAllFiles,
-                    onAddFolder = { treeLauncher.launch(null) },
-                )
+                val settings by vm.settings.collectAsStateWithLifecycle()
+                val locked by vm.locked.collectAsStateWithLifecycle()
+                val s = settings
+                when {
+                    s == null -> LockScreen(onUnlock = {}, waiting = true)
+                    s.appLock && locked -> LockScreen(onUnlock = ::authenticate, waiting = false)
+                    else -> DopaRoot(
+                        vm = vm,
+                        onRequestAllFiles = ::requestAllFiles,
+                        onAddFolder = { treeLauncher.launch(null) },
+                    )
+                }
             }
         }
     }
@@ -73,6 +85,47 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         vm.refreshPermissions()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        vm.onAppForegrounded(vm.settings.value?.appLock ?: true)
+    }
+
+    override fun onStop() {
+        vm.onAppBackgrounded()
+        super.onStop()
+    }
+
+    private fun authenticate() {
+        val authenticators = BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        val status = BiometricManager.from(this).canAuthenticate(authenticators)
+        if (status != BiometricManager.BIOMETRIC_SUCCESS) {
+            Toast.makeText(this, "Configure uma trava de tela no Android para usar o bloqueio", Toast.LENGTH_LONG).show()
+            vm.unlock()
+            return
+        }
+        val prompt = BiometricPrompt(
+            this,
+            ContextCompat.getMainExecutor(this),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    vm.unlock()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    if (errorCode != BiometricPrompt.ERROR_USER_CANCELED && errorCode != BiometricPrompt.ERROR_CANCELED) {
+                        Toast.makeText(this@MainActivity, errString, Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+        )
+        prompt.authenticate(
+            BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Desbloquear Dopa Cleaner")
+                .setAllowedAuthenticators(authenticators)
+                .build(),
+        )
     }
 
     private fun requestAllFiles() {

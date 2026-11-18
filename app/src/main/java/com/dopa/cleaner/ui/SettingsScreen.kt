@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -29,6 +31,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -38,6 +41,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -75,6 +79,21 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            item { Section("O que procurar") }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val c = s.categories
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = c.porn, onClick = { vm.setCategories(c.copy(porn = !c.porn)) }, label = { Text("Pornografia") })
+                        FilterChip(selected = c.hentai, onClick = { vm.setCategories(c.copy(hentai = !c.hentai)) }, label = { Text("Hentai/desenho") })
+                        FilterChip(selected = c.sexy, onClick = { vm.setCategories(c.copy(sexy = !c.sexy)) }, label = { Text("Sensual") })
+                    }
+                    Text("Sensual inclui lingerie, biquíni e nudez parcial. Desligue para reduzir falsos positivos (praia, academia).", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            item { ThresholdSlider(s.threshold, vm::setThreshold) }
+
+            item { HorizontalDivider() }
             item { Section("Velocidade da varredura") }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -94,6 +113,23 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
                 }
             }
             item {
+                ToggleRow(
+                    "Usar GPU",
+                    "Acelera a análise em aparelhos compatíveis. Desligue se o app fechar sozinho.",
+                    s.useGpu,
+                    vm::setGpu,
+                )
+            }
+            item {
+                ToggleRow(
+                    "Varredura profunda",
+                    "Percorre pasta por pasta, inclusive ocultas e com .nomedia. Muito mais lento; o padrão usa o índice de mídia do Android.",
+                    s.options.deepScan,
+                    vm::setDeepScan,
+                )
+            }
+            item { MinPxSlider(s.options.minImagePx, vm::setMinPx) }
+            item {
                 ToggleRow("Pular pastas de miniaturas (.thumbnails)", "Evita analisar cópias reduzidas da galeria", s.options.skipThumbnailDirs, vm::setSkipThumbs)
             }
             item {
@@ -102,8 +138,8 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
             item { MinSizeSlider(s.options.minFileKb, vm::setMinKb) }
 
             item { HorizontalDivider() }
-            item { Section("Sensibilidade") }
-            item { ThresholdSlider(s.threshold, vm::setThreshold) }
+            item { Section("Pastas ignoradas") }
+            item { ExcludedPaths(s.options.excludedPaths, vm::addExcluded, vm::removeExcluded) }
 
             item { HorizontalDivider() }
             item { Section("Segundo plano") }
@@ -143,6 +179,8 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
             item { HorizontalDivider() }
             item { Section("Privacidade") }
             item { ToggleRow("Borrar miniaturas", "Prévias aparecem borradas até você tocar", s.blurPreviews, vm::setBlur) }
+            item { ToggleRow("Bloquear app", "Pede digital, rosto ou PIN ao abrir e após 30 s fora do app", s.appLock, vm::setAppLock) }
+            item { ToggleRow("Avisar ao terminar", "Notificação discreta quando a varredura acaba", s.notifyOnFinish, vm::setNotify) }
             item {
                 OutlinedButton(onClick = vm::resetCache, enabled = !scan.running) { Text("Limpar cache e resultados") }
             }
@@ -192,6 +230,39 @@ fun ThresholdSlider(value: Float, onCommit: (Float) -> Unit) {
     Column {
         Text("Limite: ${(local * 100).toInt()}% — menor = mais sensível (mais falsos positivos)", style = MaterialTheme.typography.bodySmall)
         Slider(value = local, onValueChange = { local = it }, onValueChangeFinished = { onCommit(local) }, valueRange = 0.30f..0.98f)
+    }
+}
+
+@Composable
+private fun MinPxSlider(valuePx: Int, onCommit: (Int) -> Unit) {
+    var local by remember(valuePx) { mutableFloatStateOf(valuePx.toFloat()) }
+    Column {
+        Text("Ignorar imagens com lado menor que ${local.toInt()} px (sem abrir o arquivo)", style = MaterialTheme.typography.bodySmall)
+        Slider(value = local, onValueChange = { local = it }, onValueChangeFinished = { onCommit(local.toInt()) }, valueRange = 0f..600f)
+    }
+}
+
+@Composable
+private fun ExcludedPaths(paths: List<String>, onAdd: (String) -> Unit, onRemove: (String) -> Unit) {
+    var text by remember { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Arquivos cujo caminho contém um destes trechos são pulados.", style = MaterialTheme.typography.bodySmall)
+        paths.forEach { p ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(p, Modifier.weight(1f), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                IconButton(onClick = { onRemove(p) }) { Icon(Icons.Default.Close, "Remover") }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                placeholder = { Text("ex.: /DCIM/Camera ou WhatsApp") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = { onAdd(text); text = "" }, enabled = text.isNotBlank()) { Icon(Icons.Default.Add, "Adicionar") }
+        }
     }
 }
 

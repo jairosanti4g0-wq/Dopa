@@ -17,7 +17,10 @@ import com.dopa.cleaner.config.CustomSourceConfig
 import com.dopa.cleaner.config.ScanSchedule
 import com.dopa.cleaner.config.ScanSpeed
 import com.dopa.cleaner.core.AppSignature
+import com.dopa.cleaner.core.Finding
+import com.dopa.cleaner.core.RiskCategories
 import com.dopa.cleaner.core.ViewTarget
+import kotlinx.coroutines.flow.combine
 import com.dopa.cleaner.config.SecretBox
 import com.dopa.cleaner.scan.ScanState
 import com.dopa.cleaner.service.ScanService
@@ -38,6 +41,18 @@ import kotlinx.coroutines.launch
 enum class ConsentPurpose { DRIVE, DRIVE_THEN_SCAN, PHOTOS }
 
 data class PendingConsent(val purpose: ConsentPurpose, val intent: PendingIntent)
+
+enum class MediaFilter(val label: String) { ALL("Tudo"), IMAGES("Fotos"), VIDEOS("Vídeos") }
+
+enum class SortOrder(val label: String) { RISK("Maior risco"), SIZE("Maior tamanho"), NAME("Nome"), SOURCE("Fonte") }
+
+data class ResultFilter(
+    val media: MediaFilter = MediaFilter.ALL,
+    val source: String? = null,
+    val query: String = "",
+    val sort: SortOrder = SortOrder.RISK,
+    val minRisk: Float = 0f,
+)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val container = (app as DopaApp).container
@@ -68,6 +83,55 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _selected = MutableStateFlow<Set<String>>(emptySet())
     val selected: StateFlow<Set<String>> = _selected.asStateFlow()
 
+    private val _filter = MutableStateFlow(ResultFilter())
+    val filter: StateFlow<ResultFilter> = _filter.asStateFlow()
+
+    val visibleFindings: StateFlow<List<Finding>> = combine(container.engine.state, _filter) { s, f ->
+        val q = f.query.trim()
+        s.findings.asSequence()
+            .filter {
+                when (f.media) {
+                    MediaFilter.ALL -> true
+                    MediaFilter.IMAGES -> !it.ref.isVideo
+                    MediaFilter.VIDEOS -> it.ref.isVideo
+                }
+            }
+            .filter { f.source == null || it.sourceName == f.source }
+            .filter { it.risk >= f.minRisk }
+            .filter { q.isEmpty() || it.ref.name.contains(q, true) || it.ref.location.contains(q, true) }
+            .let { seq ->
+                when (f.sort) {
+                    SortOrder.RISK -> seq.sortedByDescending { it.risk }
+                    SortOrder.SIZE -> seq.sortedByDescending { it.ref.sizeBytes ?: 0L }
+                    SortOrder.NAME -> seq.sortedBy { it.ref.name.lowercase() }
+                    SortOrder.SOURCE -> seq.sortedWith(compareBy<Finding> { it.sourceName }.thenByDescending { it.risk })
+                }
+            }
+            .toList()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun updateFilter(transform: (ResultFilter) -> ResultFilter) = _filter.update(transform)
+
+    private val _locked = MutableStateFlow(true)
+    val locked: StateFlow<Boolean> = _locked.asStateFlow()
+    private var backgroundedAt = 0L
+
+    fun unlock() {
+        _locked.value = false
+    }
+
+    fun onAppBackgrounded() {
+        backgroundedAt = System.currentTimeMillis()
+    }
+
+    fun onAppForegrounded(lockEnabled: Boolean) {
+        if (!lockEnabled) {
+            _locked.value = false
+        } else if (backgroundedAt > 0 && System.currentTimeMillis() - backgroundedAt > LOCK_GRACE_MS) {
+            _locked.value = true
+        }
+    }
+
     private val messages = Channel<String>(Channel.BUFFERED)
     val messageFlow = messages.receiveAsFlow()
 
@@ -90,6 +154,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val s = container.settings.current()
             if (s.driveEnabled) silentDriveCheck()
         }
+        viewModelScope.launch {
+            container.settings.settings.collect { st -> if (!st.appLock) _locked.value = false }
+        }
     }
 
     private fun toast(msg: String) {
@@ -111,6 +178,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setSkipHidden(v: Boolean) = viewModelScope.launch { container.settings.setSkipHidden(v) }
     fun setMinKb(v: Int) = viewModelScope.launch { container.settings.setMinKb(v) }
     fun setBlur(v: Boolean) = viewModelScope.launch { container.settings.setBlur(v) }
+    fun setMinPx(v: Int) = viewModelScope.launch { container.settings.setMinPx(v) }
+    fun setDeepScan(v: Boolean) = viewModelScope.launch { container.settings.setDeepScan(v) }
+    fun setGpu(v: Boolean) = viewModelScope.launch { container.settings.setGpu(v) }
+    fun setAppLock(v: Boolean) = viewModelScope.launch { container.settings.setAppLock(v) }
+    fun setNotify(v: Boolean) = viewModelScope.launch { container.settings.setNotify(v) }
+    fun setCategories(v: RiskCategories) = viewModelScope.launch {
+        if (!v.any) toast("Mantenha pelo menos uma categoria ativa") else container.settings.setCategories(v)
+    }
+    fun addExcluded(path: String) = viewModelScope.launch { container.settings.addExcluded(path) }
+    fun removeExcluded(path: String) = viewModelScope.launch { container.settings.removeExcluded(path) }
+
+    fun selectVisible() = _selected.update { visibleFindings.value.mapTo(HashSet()) { f -> f.ref.key } }
 
     suspend fun viewTarget(key: String, videoStream: Boolean): Result<ViewTarget> = runCatching {
         container.engine.viewTarget(key, videoStream)
@@ -237,6 +316,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun startScan() = viewModelScope.launch {
         if (scan.value.running) return@launch
         val s = container.settings.current()
+        if (!s.categories.any) {
+            toast("Ative pelo menos uma categoria em Configurações")
+            return@launch
+        }
         if (s.localEnabled && !Environment.isExternalStorageManager()) {
             toast("Conceda 'Acesso a todos os arquivos' para varrer o aparelho")
             return@launch
@@ -249,7 +332,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return@launch
         }
         _selected.value = emptySet()
-        val started = runCatching { container.engine.start(built.sources, s.threshold, s.options.speed) }.getOrElse {
+        val started = runCatching { container.engine.start(built.sources, container.scanConfig(s)) }.getOrElse {
             toast(it.message ?: "Falha ao iniciar")
             false
         }
@@ -340,5 +423,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             CustomSourceConfig.SafFolder(CustomSourceConfig.newId(), "$label ($authority)", uri.toString()),
         )
         toast("Pasta adicionada")
+    }
+
+    companion object {
+        private const val LOCK_GRACE_MS = 30_000L
     }
 }
